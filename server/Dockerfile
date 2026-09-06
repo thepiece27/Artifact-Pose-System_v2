@@ -32,7 +32,7 @@ RUN pip install pybind11[global]
 WORKDIR /build
 COPY native/pose_solver_cpp/ ./pose_solver_cpp/
 
-RUN cmake -S pose_solver_cpp -B pose_solver_cpp/build \
+RUN cmake -S pose_solver_cpp -B pose_solver_cpp/build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build pose_solver_cpp/build --parallel "$(( $(nproc) / 2 < 2 ? 2 : $(nproc) / 2 ))"
 
 ###############################################################################
@@ -69,6 +69,13 @@ COPY . .
 # Copy .so tu builder stage — link voi dung libs cua container
 COPY --from=cpp-builder /build/pose_solver_cpp/build/pose_solver_cpp*.so \
     /app/app/modules/artifact_pose/
+
+# Do not run the API as root. Runtime data is supplied through /app/data and
+# /app/model volumes; make the mount points writable by the service account.
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /app/data /app/model \
+    && chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 8000
 

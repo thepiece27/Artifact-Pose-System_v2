@@ -18,6 +18,8 @@ class APIConfig:
 
 	base_url: str
 	device_id: str
+	device_api_key: str = ""
+	device_enrollment_key: str = ""
 	timeout_sec: int = 10
 	# Timeout rieng cho upload anh 4K + xu ly pose tren server.
 	# Pose correction (ORB + G2O) mat 10-20s, golden init mat 60-120s.
@@ -34,6 +36,12 @@ class APIClient:
 	def _url(self, path: str) -> str:
 		return f"{self.config.base_url.rstrip('/')}{path}"
 
+	def _device_headers(self) -> Dict[str, str]:
+		return {"X-Device-Key": self.config.device_api_key} if self.config.device_api_key else {}
+
+	def _enrollment_headers(self) -> Dict[str, str]:
+		return {"X-Enrollment-Key": self.config.device_enrollment_key} if self.config.device_enrollment_key else {}
+
 	def receive_move_command(self) -> Optional[Dict[str, Any]]:
 		"""Nhan lenh dieu khien tu endpoint POST /devices/{id}/move.
 
@@ -47,6 +55,7 @@ class APIClient:
 			response = requests.post(
 				self._url(endpoint),
 				json={"device_id": self.config.device_id},
+				headers=self._device_headers(),
 				timeout=self.config.timeout_sec,
 			)
 			response.raise_for_status()
@@ -77,6 +86,7 @@ class APIClient:
 			response = requests.post(
 				self._url(endpoint),
 				json=payload,
+				headers=self._enrollment_headers(),
 				timeout=self.config.timeout_sec,
 			)
 			response.raise_for_status()
@@ -123,6 +133,7 @@ class APIClient:
 				response = requests.post(
 					self._url(endpoint),
 					files=files,
+					headers=self._device_headers(),
 					timeout=self.config.upload_inspection_timeout_sec,
 				)
 				response.raise_for_status()
@@ -167,6 +178,7 @@ class APIClient:
 					self._url(endpoint),
 					files=files,
 					data=data,
+					headers=self._device_headers(),
 					timeout=self.config.upload_stereo_timeout_sec,
 				)
 				if not response.ok:

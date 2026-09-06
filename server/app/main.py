@@ -4,14 +4,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router as api_router
 from app.core.database import init_auth_database
-from app.core.config import ensure_directories, get_settings
+from app.core.config import ensure_directories, get_settings, validate_runtime_security
 from app.services.state import AppContainer
 
 settings = get_settings()
+validate_runtime_security(settings)
 ensure_directories(settings)
 container = AppContainer(settings)
 
@@ -43,10 +43,3 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
-
-# Serve uploaded inspection / reference images so the client can render them.
-app.mount(
-    "/uploads",
-    StaticFiles(directory=str(settings.uploads_dir), check_dir=False),
-    name="uploads",
-)

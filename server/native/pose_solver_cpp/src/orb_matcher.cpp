@@ -15,7 +15,7 @@ void ORBMatcher::setConfig(const MatchConfig& config) {
 
 void ORBMatcher::initMatcher() {
     if (config_.method == MatchConfig::BF_HAMMING) {
-        matcher_ = BFMatcher::create(NORM_HAMMING, config_.crossCheck);
+        matcher_ = BFMatcher::create(NORM_HAMMING, false); // Explicit mutual KNN below.
     } else {
         matcher_ = makePtr<FlannBasedMatcher>(
             makePtr<flann::LshIndexParams>(12, 20, 2)
@@ -27,14 +27,23 @@ vector<DMatch> ORBMatcher::matchBruteForce(
     const Mat& desc1,
     const Mat& desc2
 ) {
-    if (desc1.empty() || desc2.empty()) {
+    if (desc1.rows < 2 || desc2.rows < 2) {
         return {};
     }
 
     vector<vector<DMatch>> knnMatches;
     matcher_->knnMatch(desc1, desc2, knnMatches, 2);
 
-    return filterByRatioTest(knnMatches);
+    auto forward = filterByRatioTest(knnMatches);
+    vector<vector<DMatch>> reverseKnn;
+    matcher_->knnMatch(desc2, desc1, reverseKnn, 2);
+    auto reverse = filterByRatioTest(reverseKnn);
+    vector<int> reverseIndex(desc2.rows, -1);
+    for (const auto& m : reverse) reverseIndex[m.queryIdx] = m.trainIdx;
+    vector<DMatch> mutual;
+    for (const auto& m : forward)
+        if (reverseIndex[m.trainIdx] == m.queryIdx) mutual.push_back(m);
+    return mutual;
 }
 
 vector<DMatch> ORBMatcher::filterByRatioTest(
@@ -71,7 +80,7 @@ Match3D2DResult ORBMatcher::matchWith3DReference(
         return result;
     }
 
-    if (refPoints3d.size() != (size_t)refDescriptors.rows) {
+    if (refPoints3d.size() != (size_t)refDescriptors.rows || currentKeypoints.size() != (size_t)currentDescriptors.rows) {
         return result;  // Mismatch between 3D points and descriptors
     }
 

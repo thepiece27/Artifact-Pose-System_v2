@@ -112,11 +112,11 @@ Các biến quan trọng trong `server/.env.docker`:
 ```env
 POSTGRES_DB=artifact_auth
 POSTGRES_USER=artifact
-POSTGRES_PASSWORD=artifact123
+POSTGRES_PASSWORD=<generate-a-unique-password-at-least-16-chars>
 
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=123456
-AUTH_SECRET_KEY=CHANGE_ME_AUTH_SECRET
+ADMIN_PASSWORD=<generate-a-unique-password-at-least-12-chars>
+AUTH_SECRET_KEY=<generate-a-unique-secret-at-least-32-chars>
 
 MQTT_HOST=mosquitto
 MQTT_PORT=1883
@@ -169,7 +169,7 @@ curl http://127.0.0.1:8000/mqtt/health
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"123456"}'
+  -d '{"username":"admin","password":"<ADMIN_PASSWORD>"}'
 ```
 
 Xem log server:
@@ -341,7 +341,7 @@ client/artifact_app/lib/services/api_config.dart
 Hiện tại mặc định đang là:
 
 ```dart
-static const String _pcIp = '192.168.1.169';
+Pass `--dart-define=API_BASE_URL=https://<server-host>` when building the app; do not hardcode a LAN IP in release sources.
 ```
 
 Khuyến nghị vẫn dùng `--dart-define=API_BASE_URL=...` khi build để tránh quên sửa hardcode.
@@ -366,8 +366,10 @@ SERVER_BASE_URL=http://192.168.137.1:8000
 MQTT_HOST=192.168.137.1
 MQTT_PORT=1883
 MQTT_KEEPALIVE_SEC=60
-MQTT_USERNAME=
-MQTT_PASSWORD=
+MQTT_USERNAME=<mqtt-username>
+MQTT_PASSWORD=<mqtt-password>
+DEVICE_API_KEY=<device-api-key>
+DEVICE_ENROLLMENT_KEY=<enrollment-key>
 MQTT_QOS=1
 
 MQTT_CMD_TOPIC_TEMPLATE=cmd/{device_id}
@@ -603,8 +605,8 @@ Nếu thay model, restart server.
 
 ## 13. Ghi Chú Bảo Mật
 
-- `AUTH_SECRET_KEY=CHANGE_ME_AUTH_SECRET` chỉ phù hợp môi trường dev.
-- Mosquitto hiện `allow_anonymous true`, phù hợp LAN/dev nhưng không nên mở public.
+- Không dùng placeholder trong production; server sẽ fail-fast với secret yếu/thiếu.
+- Mosquitto hiện yêu cầu username/password (`allow_anonymous false`); không publish broker/PostgreSQL ra mạng ngoài nếu không cần. Device command/upload và media đều yêu cầu credential.
 - Các route app như artifacts, schedules, workflows, models, pose manual cần JWT.
 - `POST /pose/initialize_golden` cho phép JWT hoặc device đã có trong registry, để Pi upload stereo pair mà không cần tài khoản app.
 - `POST /inspections/upload` là endpoint Pi upload ảnh alignment/inspection, hiện vẫn dành cho device agent trong mạng nội bộ.

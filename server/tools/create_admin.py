@@ -8,12 +8,14 @@ from app.models.user import User, UserRole
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create or update an admin user")
     parser.add_argument("--username", default="admin")
-    parser.add_argument("--password", default="123456")
+    parser.add_argument("--password", required=True)
     parser.add_argument("--role", default="admin")
     return parser.parse_args()
 
 def main() -> None:
     args = parse_args()
+    if len(args.password) < 12:
+        raise SystemExit("--password must be at least 12 characters")
     init_auth_database()
 
     db = SessionLocal()

@@ -15,7 +15,10 @@ class AppContainer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.device_registry = DeviceRegistry(settings.data_dir / "device_registry.json")
-        self.command_service = CommandService(ack_history_limit=settings.ack_history_limit)
+        self.command_service = CommandService(
+            ack_history_limit=settings.ack_history_limit,
+            state_file=settings.data_dir / "command_state.json",
+        )
         self.mqtt_bridge = MqttBridge(settings, self.command_service)
         self.model_service = ModelService(settings)
         self.pose_service = PoseService(settings)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import time
 import uuid
 from threading import Lock
@@ -46,9 +48,15 @@ class MqttBridge:
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
         self._client.on_message = self._on_message
+        try:
+            self._client.reconnect_delay_set(min_delay=1, max_delay=30)
+        except Exception:
+            pass
 
         try:
-            self._client.connect(
+            # connect_async lets Paho's network loop handle broker cold-start
+            # and transient network failures without blocking API startup.
+            self._client.connect_async(
                 self._settings.mqtt_host,
                 self._settings.mqtt_port,
                 self._settings.mqtt_keepalive_sec,
@@ -96,6 +104,11 @@ class MqttBridge:
             if not self._state.get("connected"):
                 return False, "mqtt_not_connected"
 
+        if not self._valid_device_id(device_id):
+            return False, "invalid_device_id"
+        if not isinstance(payload, dict) or not str(payload.get("task_id", "")).strip():
+            return False, "command_task_id_required"
+
         topic = self._topic(self._settings.mqtt_cmd_topic_template, device_id)
 
         try:
@@ -115,6 +128,19 @@ class MqttBridge:
             with self._lock:
                 self._state["last_error"] = error
             return False, error
+
+        if self._settings.mqtt_qos > 0:
+            try:
+                # Paho versions differ: wait_for_publish() may return None.
+                # The authoritative delivery flag is is_published().
+                info.wait_for_publish(timeout=self._settings.mqtt_publish_timeout_sec)
+                if not bool(getattr(info, "is_published", lambda: False)()):
+                    error = "publish_ack_timeout"
+                    with self._lock:
+                        self._state["last_error"] = error
+                    return False, error
+            except Exception as exc:
+                return False, f"publish_ack_error={exc}"
 
         self._log_event("publish_cmd", topic, payload)
         return True, topic
@@ -152,6 +178,18 @@ class MqttBridge:
                 "parse_error": True,
             }
 
+        if not isinstance(payload, dict):
+            self._log_event("reject", topic, {"reason": "payload_not_object"})
+            return
+
+        topic_device = self._extract_device_id(topic, self._settings.mqtt_status_topic_template)
+        if topic_device is None:
+            topic_device = self._extract_device_id(topic, self._settings.mqtt_ack_topic_template)
+        payload_device = str(payload.get("device_id", "")).strip()
+        if topic_device and payload_device != topic_device:
+            self._log_event("reject", topic, {"reason": "device_id_topic_mismatch"})
+            return
+
         if self._topic_matches(topic, self._settings.mqtt_status_topic_template):
             device_id = self._extract_device_id(topic, self._settings.mqtt_status_topic_template)
             if device_id:
@@ -172,12 +210,25 @@ class MqttBridge:
             "topic": topic,
             "payload": payload,
         }
-        with self._settings.mqtt_event_log_file.open("a", encoding="utf-8") as fp:
+        log_file = self._settings.mqtt_event_log_file
+        try:
+            max_bytes = int(os.getenv("MQTT_EVENT_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
+            if log_file.exists() and log_file.stat().st_size >= max(1024, max_bytes):
+                rotated = log_file.with_suffix(log_file.suffix + ".1")
+                rotated.unlink(missing_ok=True)
+                log_file.replace(rotated)
+        except Exception:
+            pass
+        with log_file.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     @staticmethod
     def _topic(template: str, device_id: str) -> str:
         return template.format(device_id=device_id)
+
+    @staticmethod
+    def _valid_device_id(device_id: str) -> bool:
+        return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", str(device_id or "")))
 
     @staticmethod
     def _topic_wildcard(template: str) -> str:

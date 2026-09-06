@@ -5,11 +5,13 @@ import time
 import logging
 from pathlib import Path
 from typing import Any
+from threading import Lock
 
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.core.uploads import safe_component, validate_image_bytes
 from app.models.artifact import (
     Artifact, Image, ImageComparison, ImageType, 
     ComparisonStatus, Alert, AlertLevel, InspectionType, Schedule
@@ -41,19 +43,55 @@ class InspectionService:
         #                              1 = Rotation (Pan,Tilt servos)
         # Always starts at 0 and alternates each dispatched move.
         self._alignment_phase: dict[str, int] = {}
+        self._alignment_state_file = settings.data_dir / "alignment_state.json"
+        self._alignment_lock = Lock()
+        self._load_alignment_state()
+
+    def _load_alignment_state(self) -> None:
+        try:
+            if not self._alignment_state_file.exists():
+                return
+            payload = json.loads(self._alignment_state_file.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return
+            self._alignment_counters.update({str(k): int(v) for k, v in (payload.get("counters") or {}).items()})
+            self._alignment_start_ts.update({str(k): float(v) for k, v in (payload.get("start_ts") or {}).items()})
+            self._alignment_phase.update({str(k): int(v) for k, v in (payload.get("phase") or {}).items()})
+        except Exception:
+            return
+
+    def _persist_alignment_state(self) -> None:
+        with self._alignment_lock:
+            try:
+                self._alignment_state_file.parent.mkdir(parents=True, exist_ok=True)
+                temp = self._alignment_state_file.with_suffix(".tmp")
+                temp.write_text(json.dumps({
+                    "counters": self._alignment_counters,
+                    "start_ts": self._alignment_start_ts,
+                    "phase": self._alignment_phase,
+                }), encoding="utf-8")
+                temp.replace(self._alignment_state_file)
+            except Exception:
+                return
 
     async def _save_file(
         self, file: UploadFile, artifact_id: str | None = None
     ) -> tuple[Path, int]:
         ts_ms = int(time.time() * 1000)
-        safe_name = (file.filename or "upload.bin").replace("/", "_").replace("\\", "_")
+        safe_name = safe_component(Path(file.filename or "upload.bin").name, field="filename", max_length=120)
         if artifact_id and artifact_id.strip():
-            target_dir = self._artifact_uploads_dir / artifact_id.strip()
+            target_dir = self._artifact_uploads_dir / safe_component(artifact_id, field="artifact_id")
         else:
             target_dir = self._settings.uploads_dir
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = target_dir / f"{ts_ms}_{safe_name}"
-        content = await file.read()
+        content = await file.read(self._settings.max_upload_bytes + 1)
+        if len(content) > self._settings.max_upload_bytes:
+            raise ValueError(f"Upload exceeds {self._settings.max_upload_bytes} bytes")
+        if not content:
+            raise ValueError("Empty upload")
+        validate_image_bytes(content, max_bytes=self._settings.max_upload_bytes,
+                             max_pixels=self._settings.max_image_pixels)
         target_path.write_bytes(content)
         return target_path, len(content)
 
@@ -62,12 +100,14 @@ class InspectionService:
         return self._settings.uploads_dir / "artifacts"
 
     async def save_reference_image(self, artifact_id: str, file: UploadFile, operator_id: str | None = None) -> Image:
-        target_dir = self._artifact_uploads_dir / str(artifact_id)
+        target_dir = self._artifact_uploads_dir / safe_component(artifact_id, field="artifact_id")
         target_dir.mkdir(parents=True, exist_ok=True)
         ts_ms = int(time.time() * 1000)
-        safe_name = (file.filename or "reference.jpg").replace("/", "_").replace("\\", "_")
+        safe_name = safe_component(Path(file.filename or "reference.jpg").name, field="filename", max_length=120)
         target_path = target_dir / f"reference_{ts_ms}_{safe_name}"
-        content = await file.read()
+        content = await file.read(self._settings.max_upload_bytes + 1)
+        validate_image_bytes(content, max_bytes=self._settings.max_upload_bytes,
+                             max_pixels=self._settings.max_image_pixels)
         target_path.write_bytes(content)
         return Image(
             artifact_id=artifact_id,
@@ -91,10 +131,12 @@ class InspectionService:
         schedule_id: str | None = None,
         created_by: str | None = None,
     ) -> ImageComparison:
-        target_dir = self._artifact_uploads_dir / str(artifact.artifact_id)
+        target_dir = self._artifact_uploads_dir / safe_component(str(artifact.artifact_id), field="artifact_id")
         target_dir.mkdir(parents=True, exist_ok=True)
         ts_ms = int(time.time() * 1000)
-        safe_name = original_filename.replace("/", "_").replace("\\", "_")
+        safe_name = safe_component(Path(original_filename).name, field="filename", max_length=120)
+        validate_image_bytes(image_bytes, max_bytes=self._settings.max_upload_bytes,
+                             max_pixels=self._settings.max_image_pixels)
         current_path = target_dir / f"inspection_{ts_ms}_{safe_name}"
         current_path.write_bytes(image_bytes)
 
@@ -127,10 +169,33 @@ class InspectionService:
         ssim_val = analysis.get("ssim")
         damage_pct = analysis.get("damage_pct")
         status = self._classify_damage_status(all_dets, ssim_val, damage_pct)
+        if reference_path is None:
+            # Legacy schema requires previous_image_id, so keep the current
+            # image as a compatibility placeholder but explicitly mark this
+            # as baseline-missing. It must never be presented as a clean
+            # comparison result.
+            status = ComparisonStatus.warning
+            analysis["analysis_status"] = "baseline_missing"
+            analysis["analysis_error"] = "baseline_image_not_configured"
+            analysis["detections_json"] = json.dumps({
+                "analysis_status": "baseline_missing",
+                "analysis_error": "baseline_image_not_configured",
+                "detections": all_dets,
+            })
+        # A resize-only fallback is a degraded comparison, not evidence of a
+        # clean artifact.  Preserve damage escalation but downgrade a would-be
+        # good result to the conservative warning state.
+        if (
+            status == ComparisonStatus.good
+            and analysis.get("alignment_quality") == "resize_fallback"
+        ):
+            status = ComparisonStatus.warning
+        if analysis.get("analysis_status") == "failed" and status == ComparisonStatus.good:
+            status = ComparisonStatus.warning
 
         comparison = ImageComparison(
             artifact_id=artifact.artifact_id,
-            previous_image_id=previous_image_id or current_image.image_id,
+            previous_image_id=previous_image_id,
             current_image_id=current_image.image_id,
             schedule_id=schedule_id,
             damage_score=round(damage_pct or 0.0, 2),
@@ -178,6 +243,12 @@ class InspectionService:
         - YOLO HIGH-confidence detections can escalate the status.
         - Without SSIM, fall back to YOLO confidence only.
         """
+        # No usable signal is a failed/unknown analysis, never a clean result.
+        # Keep the legacy enum contract and surface the detailed failure in
+        # detections_json until an explicit UNKNOWN enum is added.
+        if ssim is None and not detections:
+            return ComparisonStatus.warning
+
         # Determine SSIM-based grade
         ssim_status: ComparisonStatus | None = None
         if ssim is not None:
@@ -204,7 +275,10 @@ class InspectionService:
         _rank = {ComparisonStatus.good: 0, ComparisonStatus.warning: 1, ComparisonStatus.damaged: 2}
         candidates = [s for s in (ssim_status, yolo_status) if s is not None]
         if not candidates:
-            return ComparisonStatus.good
+            # Missing/failed analysis must never become a false negative.
+            # Until the schema gains an explicit UNKNOWN enum, warning is the
+            # conservative compatible representation.
+            return ComparisonStatus.warning
         return max(candidates, key=lambda s: _rank[s])
 
     @staticmethod
@@ -239,6 +313,11 @@ class InspectionService:
             "auto_description": "Analysis performed.",
             "detections_json": None,
             "all_detections": [],
+            "analysis_status": "pending",
+            "analysis_error": None,
+            "alignment_quality": "not_run",
+            "sift_inliers": 0,
+            "valid_mask_ratio": None,
         }
 
         try:
@@ -246,9 +325,13 @@ class InspectionService:
             import numpy as np
             current_img = cv2.imread(str(current_path))
             if current_img is None:
+                result["analysis_status"] = "failed"
+                result["analysis_error"] = "current_image_decode_failed"
                 result["auto_description"] = "Error: Cannot read inspection image."
                 return result
         except Exception as load_exc:
+            result["analysis_status"] = "failed"
+            result["analysis_error"] = f"image_load_error:{type(load_exc).__name__}"
             result["auto_description"] = f"Image load error: {load_exc}"
             return result
 
@@ -271,7 +354,17 @@ class InspectionService:
                     )
 
                     # SIFT: used only for diff map.  YOLO runs on yolo_source (no warp artifacts).
-                    aligned_img, valid_mask, _ = self._sift_align_with_mask(cur_resized, reference_img)
+                    aligned_img, valid_mask, sift_inliers = self._sift_align_with_mask(cur_resized, reference_img)
+                    result["sift_inliers"] = int(sift_inliers)
+                    result["alignment_quality"] = (
+                        "sift_homography"
+                        if sift_inliers >= 15 and valid_mask is not None
+                        else "resize_fallback"
+                    )
+                    if valid_mask is not None:
+                        result["valid_mask_ratio"] = round(
+                            float(cv2.countNonZero(valid_mask)) / max(float(h * w), 1.0), 6
+                        )
                     ssim_source = aligned_img if aligned_img is not None else cur_resized
                     yolo_source = cur_resized
 
@@ -334,19 +427,21 @@ class InspectionService:
                     damage_area = sum(cv2.contourArea(c) for c in big_contours)
                     damage_pct  = (damage_area / max(valid_area, 1)) * 100.0
                     result["damage_pct"] = round(damage_pct, 2)
+                    result["analysis_status"] = "ok"
 
                     # ── Save heatmap ───────────────────────────────────────────────
-                    _out_dir = self._artifact_uploads_dir / artifact_id
+                    safe_artifact_id = safe_component(artifact_id, field="artifact_id")
+                    _out_dir = self._artifact_uploads_dir / safe_artifact_id
                     _out_dir.mkdir(parents=True, exist_ok=True)
-                    heatmap_fname = f"heatmap_{artifact_id}_{ts_ms}.jpg"
+                    heatmap_fname = f"heatmap_{safe_artifact_id}_{ts_ms}.jpg"
                     cv2.imwrite(str(_out_dir / heatmap_fname), heatmap_overlay)
                     result["heatmap_path"] = str(_out_dir / heatmap_fname)
 
                     # ── Save aligned image ─────────────────────────────────────────
                     if aligned_img is not None:
-                        aligned_fname = f"aligned_{artifact_id}_{ts_ms}.jpg"
+                        aligned_fname = f"aligned_{safe_artifact_id}_{ts_ms}.jpg"
                         cv2.imwrite(str(_out_dir / aligned_fname), aligned_img)
-                        aligned_url = f"/uploads/artifacts/{artifact_id}/{aligned_fname}"
+                        aligned_url = f"/uploads/artifacts/{safe_artifact_id}/{aligned_fname}"
                         result["aligned_image_path"] = aligned_url
 
                     # ── YOLO: hybrid pipeline on yolo_source ───────────────────────
@@ -463,6 +558,8 @@ class InspectionService:
 
             except Exception as exc:
                 logger.error(f"[analyze] pipeline error: {exc}", exc_info=True)
+                result["analysis_status"] = "failed"
+                result["analysis_error"] = f"pipeline_error:{type(exc).__name__}"
         else:
             result["auto_description"] = "No reference image — AI detection only."
             try:
@@ -482,6 +579,15 @@ class InspectionService:
                         })
             except Exception as exc:
                 logger.warning(f"[analyze] YOLO error (no reference): {exc}")
+                result["analysis_status"] = "failed"
+                result["analysis_error"] = f"detector_error:{type(exc).__name__}"
+
+        if result["analysis_status"] == "pending":
+            result["analysis_status"] = (
+                "ok" if result.get("ssim") is not None or all_dets else "failed"
+            )
+            if result["analysis_status"] == "failed" and result["analysis_error"] is None:
+                result["analysis_error"] = "no_analysis_signal"
 
         # ── Annotate bboxes on annotated image (no crop outlines) ─────────────
         try:
@@ -516,11 +622,12 @@ class InspectionService:
         # ── Save annotated image ───────────────────────────────────────────────
         annotated_url: str | None = None
         try:
-            _out_dir = self._artifact_uploads_dir / artifact_id
+            safe_artifact_id = safe_component(artifact_id, field="artifact_id")
+            _out_dir = self._artifact_uploads_dir / safe_artifact_id
             _out_dir.mkdir(parents=True, exist_ok=True)
-            detect_fname = f"detect_{artifact_id}_{ts_ms}.jpg"
+            detect_fname = f"detect_{safe_artifact_id}_{ts_ms}.jpg"
             cv2.imwrite(str(_out_dir / detect_fname), annotated)
-            annotated_url = f"/uploads/artifacts/{artifact_id}/{detect_fname}"
+            annotated_url = f"/uploads/artifacts/{safe_artifact_id}/{detect_fname}"
         except Exception as save_exc:
             logger.warning(f"[analyze] save detect image error: {save_exc}")
 
@@ -543,6 +650,11 @@ class InspectionService:
                 "ssim_color": result.get("ssim_color"),
                 "damage_pct": result.get("damage_pct"),
             } if result.get("ssim") is not None else None,
+            "analysis_status": result.get("analysis_status"),
+            "analysis_error": result.get("analysis_error"),
+            "alignment_quality": result.get("alignment_quality"),
+            "sift_inliers": result.get("sift_inliers", 0),
+            "valid_mask_ratio": result.get("valid_mask_ratio"),
         })
 
         det_count = len(all_dets)
@@ -551,37 +663,44 @@ class InspectionService:
             f"{det_count} region(s) detected{ssim_str}." if det_count
             else f"No damage detected{ssim_str}."
         )
-        logger.info("[analyze] %d detection(s), SSIM=%.4f for artifact=%s",
-                    det_count, result.get("ssim") or 0.0, artifact_id)
+        logger.info("[analyze] status=%s %d detection(s), SSIM=%.4f for artifact=%s",
+                    result.get("analysis_status"), det_count,
+                    result.get("ssim") or 0.0, artifact_id)
         return result
 
     @staticmethod
     def _nms_detections(dets: list[dict], iou_threshold: float = 0.45) -> list[dict]:
-        """Non-maximum suppression across all detections (class-agnostic)."""
+        """Class-aware NMS for detections from tight/wide crops.
+
+        Overlap between different defect classes is not a duplicate.  The old
+        class-agnostic suppression could silently remove a real finding.
+        """
         if not dets:
             return []
-        dets_sorted = sorted(dets, key=lambda d: d.get("confidence", 0), reverse=True)
         keep: list[dict] = []
-        suppressed: set[int] = set()
-        for i, d in enumerate(dets_sorted):
-            if i in suppressed:
-                continue
-            keep.append(d)
-            ax1, ay1, ax2, ay2 = d["bbox_xyxy"]
-            area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
-            for j, e in enumerate(dets_sorted):
-                if j <= i or j in suppressed:
-                    continue
-                bx1, by1, bx2, by2 = e["bbox_xyxy"]
-                ix1 = max(ax1, bx1); iy1 = max(ay1, by1)
-                ix2 = min(ax2, bx2); iy2 = min(ay2, by2)
-                inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-                if inter == 0:
-                    continue
-                area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
-                iou = inter / max(area_a + area_b - inter, 1)
-                if iou > iou_threshold:
-                    suppressed.add(j)
+        groups: dict[str, list[dict]] = {}
+        for det in dets:
+            groups.setdefault(str(det.get("class_name", "unknown")), []).append(det)
+        for group in groups.values():
+            dets_sorted = sorted(
+                group, key=lambda d: float(d.get("confidence", 0)), reverse=True
+            )
+            while dets_sorted:
+                d = dets_sorted.pop(0)
+                keep.append(d)
+                ax1, ay1, ax2, ay2 = [float(v) for v in d["bbox_xyxy"]]
+                area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+                remaining: list[dict] = []
+                for e in dets_sorted:
+                    bx1, by1, bx2, by2 = [float(v) for v in e["bbox_xyxy"]]
+                    ix1 = max(ax1, bx1); iy1 = max(ay1, by1)
+                    ix2 = min(ax2, bx2); iy2 = min(ay2, by2)
+                    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+                    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+                    iou = inter / max(area_a + area_b - inter, 1e-9)
+                    if iou <= iou_threshold:
+                        remaining.append(e)
+                dets_sorted = remaining
         return keep
 
     @staticmethod
@@ -656,13 +775,48 @@ class InspectionService:
         except Exception:
             return 1.0
 
+    def _run_detector_on_path(self, path: Path) -> dict[str, Any]:
+        """Run the configured detector with an explicit failure contract.
+
+        In particular, a missing/unloaded model is reported as ``failed`` and
+        never represented as an empty successful detection list.
+        """
+        try:
+            raw = self._model_service.detect_image(
+                self._settings.default_ai_model_name,
+                path.read_bytes(),
+            )
+            detections: list[dict[str, Any]] = []
+            for item in raw or []:
+                if isinstance(item, dict):
+                    values = item.get("detections", [])
+                    if isinstance(values, list):
+                        detections.extend(values)
+            return {
+                "status": "ok",
+                "detections": detections,
+                "model_name": self._settings.default_ai_model_name,
+            }
+        except Exception as exc:
+            logger.warning("[ai] detector failed for %s: %s", path.name, exc)
+            return {
+                "status": "failed",
+                "error_code": f"detector_error:{type(exc).__name__}",
+                "detections": [],
+                "model_name": self._settings.default_ai_model_name,
+            }
+
     async def handle_upload(self, file: UploadFile, metadata_str: str) -> dict[str, Any]:
         """Save image uploaded by device agent, run pose correction, record latest metadata."""
         import json as _json
+        if len(metadata_str.encode("utf-8")) > self._settings.max_metadata_bytes:
+            raise ValueError("Metadata exceeds configured limit")
         try:
             meta = _json.loads(metadata_str)
         except Exception as exc:
             raise ValueError(f"Invalid metadata JSON: {exc}") from exc
+        if not isinstance(meta, dict):
+            raise ValueError("Metadata must be a JSON object")
 
         device_id = str(meta.get("device_id", ""))
         artifact_id = str(meta.get("artifact_id", ""))
@@ -682,26 +836,82 @@ class InspectionService:
 
         self._command_service.record_latest_capture_metadata(device_id, capture_metadata)
 
+        if self._settings.run_ai_on_upload:
+            ai_result = self._run_detector_on_path(saved_path)
+            capture_metadata["ai_status"] = ai_result.get("status")
+            self._command_service.record_latest_capture_metadata(device_id, capture_metadata)
+
         # Attempt pose correction (non-fatal if it fails)
         pose_result: dict[str, Any] | None = None
         correction_dispatch: dict[str, Any] | None = None
         workflow: dict[str, Any] = calibration_data.get("workflow", {}) if isinstance(calibration_data, dict) else {}
         auto_alignment_loop: bool = isinstance(workflow, dict) and bool(workflow.get("auto_alignment_loop", False))
+        if auto_alignment_loop and not self._settings.run_pose_on_upload:
+            # An alignment loop without pose estimation cannot make a safe
+            # correction decision; ingest the frame but do not keep issuing
+            # retry captures or motor commands.
+            capture_metadata["alignment_status"] = "disabled_pose_flag"
+            auto_alignment_loop = False
+        ai_result: dict[str, Any] | None = None
 
         # ── Alignment iteration guard ────────────────────────────────────────
         # Each upload during an active alignment loop counts as one iteration.
         # Stop and notify if the limit is exceeded.
         alignment_key = f"{device_id}:{artifact_id}"
         if auto_alignment_loop and device_id:
+            # Persisted sessions use wall-clock seconds so a restart does not
+            # invalidate the monotonic epoch from the previous process.
+            now_mono = time.time()
+            # Start the deadline on the first capture of a session and enforce
+            # it before any further pose/motor transition.
+            session_start = self._alignment_start_ts.setdefault(alignment_key, now_mono)
+            deadline = session_start + float(self._settings.alignment_timeout_sec)
             self._alignment_counters[alignment_key] = self._alignment_counters.get(alignment_key, 0) + 1
             current_iter = self._alignment_counters[alignment_key]
             # Phase 0 (translation) is always the starting phase for a fresh session.
             if alignment_key not in self._alignment_phase:
                 self._alignment_phase[alignment_key] = 0
+            self._persist_alignment_state()
             max_iter = self._settings.max_alignment_iterations
             capture_metadata["alignment_iteration"] = current_iter
             capture_metadata["alignment_max_iterations"] = max_iter
             self._command_service.record_latest_capture_metadata(device_id, capture_metadata)
+
+            if now_mono >= deadline:
+                reason = (
+                    f"Alignment timeout after {self._settings.alignment_timeout_sec} seconds"
+                )
+                logger.warning(
+                    "[alignment] Deadline exceeded for device=%s artifact=%s",
+                    device_id, artifact_id,
+                )
+                capture_metadata["alignment_status"] = "timeout"
+                capture_metadata["alignment_fail_reason"] = reason
+                self._command_service.record_latest_capture_metadata(device_id, capture_metadata)
+                self._alignment_counters.pop(alignment_key, None)
+                self._alignment_start_ts.pop(alignment_key, None)
+                self._alignment_phase.pop(alignment_key, None)
+                self._persist_alignment_state()
+                timeout_payload: dict[str, Any] = {
+                    "action": "alignment_failed",
+                    "task_id": self._command_service.build_task_id(),
+                    "artifact_id": artifact_id,
+                    "device_id": device_id,
+                    "reason": reason,
+                    "failure_code": "alignment_timeout",
+                    "workflow": workflow,
+                }
+                if self._settings.auto_dispatch_pose_command:
+                    self._mqtt_bridge.publish_command(device_id, timeout_payload)
+                return {
+                    "ok": True,
+                    "message": reason,
+                    "saved_file": saved_path.name,
+                    "size_bytes": size_bytes,
+                    "pose_result": None,
+                    "correction_dispatch": {"status": "alignment_timeout", "reason": reason},
+                    "ai_result": None,
+                }
 
             if current_iter > max_iter:
                 reason = (
@@ -719,6 +929,7 @@ class InspectionService:
                 self._alignment_counters.pop(alignment_key, None)
                 self._alignment_start_ts.pop(alignment_key, None)
                 self._alignment_phase.pop(alignment_key, None)
+                self._persist_alignment_state()
                 failed_payload: dict[str, Any] = {
                     "action": "alignment_failed",
                     "task_id": self._command_service.build_task_id(),
@@ -728,7 +939,8 @@ class InspectionService:
                     "iteration": current_iter,
                     "workflow": workflow,
                 }
-                self._mqtt_bridge.publish_command(device_id, failed_payload)
+                if self._settings.auto_dispatch_pose_command:
+                    self._mqtt_bridge.publish_command(device_id, failed_payload)
                 return {
                     "ok": True,
                     "message": f"Alignment stopped: {reason}",
@@ -742,9 +954,13 @@ class InspectionService:
             current_iter = 0
 
         try:
-            pose_result = self._pose_service.correct_image(
-                saved_path, artifact_id=artifact_id or None
-            )
+            if self._settings.run_pose_on_upload:
+                pose_result = self._pose_service.correct_image(
+                    saved_path, artifact_id=artifact_id or None
+                )
+            else:
+                capture_metadata["pose_status"] = "skipped_by_config"
+                self._command_service.record_latest_capture_metadata(device_id, capture_metadata)
             deviation = pose_result.get("deviation") if pose_result else None
 
             # Update metadata with pose deviation so Flutter can poll it live
@@ -759,7 +975,7 @@ class InspectionService:
                 # Alternates: 0 → 1 → 0 → 1 … until both axes are within tolerance.
                 # Smart-skip: if current phase's axis is already converged, jump ahead.
                 motor_cmd = pose_result.get("motor_command")
-                if motor_cmd and device_id:
+                if motor_cmd and motor_cmd.get("enabled", True) and device_id:
                     raw_move_x = float(motor_cmd.get("move_x",     0))
                     raw_move_z = float(motor_cmd.get("move_z",     0))
                     raw_pan    = float(motor_cmd.get("rotate_pan",  0))
@@ -776,6 +992,7 @@ class InspectionService:
                     if current_phase == 0 and within_trans and not within_rot:
                         current_phase = 1
                         self._alignment_phase[alignment_key] = 1
+                        self._persist_alignment_state()
                         logger.info(
                             "[alignment] Trans within tolerance → skip to ROTATION phase "
                             "(device=%s, iter=%d)",
@@ -784,6 +1001,7 @@ class InspectionService:
                     elif current_phase == 1 and within_rot and not within_trans:
                         current_phase = 0
                         self._alignment_phase[alignment_key] = 0
+                        self._persist_alignment_state()
                         logger.info(
                             "[alignment] Rot within tolerance → skip to TRANSLATION phase "
                             "(device=%s, iter=%d)",
@@ -838,15 +1056,29 @@ class InspectionService:
 
                     # Advance to the next phase so the following iteration uses the other axis.
                     self._alignment_phase[alignment_key] = 1 - current_phase
+                    self._persist_alignment_state()
 
-                    published, result_info = self._mqtt_bridge.publish_command(device_id, mc_payload)
+                    if self._settings.auto_dispatch_pose_command:
+                        published, result_info = self._mqtt_bridge.publish_command(device_id, mc_payload)
+                    else:
+                        published, result_info = False, {"reason": "auto_dispatch_disabled"}
                     correction_dispatch = {
-                        "status": "published" if published else "queued",
+                        "status": "published" if published else (
+                            "disabled" if not self._settings.auto_dispatch_pose_command else "failed"
+                        ),
                         "info": result_info,
                         "alignment_iteration": current_iter,
                         "alignment_phase": "translation" if current_phase == 0 else "rotation",
                     }
-                    if auto_alignment_loop:
+                    if auto_alignment_loop and not published:
+                        capture_metadata["alignment_status"] = "dispatch_failed"
+                        capture_metadata["alignment_fail_reason"] = str(result_info)
+                        self._command_service.record_latest_capture_metadata(device_id, capture_metadata)
+                        self._alignment_counters.pop(alignment_key, None)
+                        self._alignment_start_ts.pop(alignment_key, None)
+                        self._alignment_phase.pop(alignment_key, None)
+                        self._persist_alignment_state()
+                    if auto_alignment_loop and published:
                         phase_label = "trans" if current_phase == 0 else "rot"
                         capture_metadata["alignment_status"] = f"correcting_{phase_label}"
                         capture_metadata["alignment_phase"] = "translation" if current_phase == 0 else "rotation"
@@ -868,7 +1100,10 @@ class InspectionService:
                         "basename": f"align_retry_{artifact_id}_{int(time.time() * 1000)}",
                         "workflow": workflow,
                     }
-                    published, result_info = self._mqtt_bridge.publish_command(device_id, retry_payload)
+                    if self._settings.auto_dispatch_pose_command:
+                        published, result_info = self._mqtt_bridge.publish_command(device_id, retry_payload)
+                    else:
+                        published, result_info = False, {"reason": "auto_dispatch_disabled"}
                     correction_dispatch = {
                         "status": "retry_capture_published" if published else "retry_capture_failed",
                         "info": result_info,
@@ -882,16 +1117,21 @@ class InspectionService:
                     self._alignment_counters.pop(alignment_key, None)
                     self._alignment_start_ts.pop(alignment_key, None)
                     self._alignment_phase.pop(alignment_key, None)
+                    self._persist_alignment_state()
 
                     # Copy last captured image to distinctive final_aligned filename
                     if artifact_id:
                         ts_final = int(time.time() * 1000)
-                        final_dir = self._artifact_uploads_dir / str(artifact_id)
+                        final_dir = self._artifact_uploads_dir / safe_component(artifact_id, field="artifact_id")
                         final_dir.mkdir(parents=True, exist_ok=True)
                         final_path = final_dir / f"final_aligned_{artifact_id}_{ts_final}.png"
                         final_path.write_bytes(saved_path.read_bytes())
                         capture_metadata["final_aligned_path"] = str(final_path)
                         logger.info("[alignment] Saved final aligned image: %s", final_path.name)
+
+                        if self._settings.run_ai_on_aligned_image:
+                            ai_result = self._run_detector_on_path(final_path)
+                            capture_metadata["ai_status"] = ai_result.get("status")
 
                     capture_metadata["alignment_status"] = "complete"
                     capture_metadata["alignment_total_iterations"] = current_iter
@@ -906,7 +1146,10 @@ class InspectionService:
                         "total_iterations": current_iter,
                         "workflow": workflow,
                     }
-                    published, result_info = self._mqtt_bridge.publish_command(device_id, complete_payload)
+                    if self._settings.auto_dispatch_pose_command:
+                        published, result_info = self._mqtt_bridge.publish_command(device_id, complete_payload)
+                    else:
+                        published, result_info = False, {"reason": "auto_dispatch_disabled"}
                     correction_dispatch = {
                         "status": "alignment_complete_published" if published else "alignment_complete_failed",
                         "info": result_info,
@@ -921,6 +1164,7 @@ class InspectionService:
                 self._alignment_counters.pop(alignment_key, None)
                 self._alignment_start_ts.pop(alignment_key, None)
                 self._alignment_phase.pop(alignment_key, None)
+                self._persist_alignment_state()
                 # Notify device that alignment failed so it stops immediately
                 exc_failed_payload: dict[str, Any] = {
                     "action": "alignment_failed",
@@ -930,7 +1174,8 @@ class InspectionService:
                     "reason": reason,
                     "workflow": workflow,
                 }
-                self._mqtt_bridge.publish_command(device_id, exc_failed_payload)
+                if self._settings.auto_dispatch_pose_command:
+                    self._mqtt_bridge.publish_command(device_id, exc_failed_payload)
 
         return {
             "ok": True,
@@ -939,7 +1184,7 @@ class InspectionService:
             "size_bytes": size_bytes,
             "pose_result": pose_result,
             "correction_dispatch": correction_dispatch,
-            "ai_result": None,
+            "ai_result": ai_result,
         }
 
     def reset_alignment_counter(self, device_id: str, artifact_id: str) -> None:
@@ -947,3 +1192,4 @@ class InspectionService:
         self._alignment_counters.pop(alignment_key, None)
         self._alignment_start_ts.pop(alignment_key, None)
         self._alignment_phase.pop(alignment_key, None)
+        self._persist_alignment_state()

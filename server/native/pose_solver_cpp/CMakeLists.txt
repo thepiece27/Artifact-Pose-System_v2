@@ -1,47 +1,52 @@
-cmake_minimum_required(VERSION 3.10)
-project(pose_solver_cpp)
-
+cmake_minimum_required(VERSION 3.22)
+project(artifact_pose LANGUAGES CXX C)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_POLICY_DEFAULT_CMP0072 NEW)
-
-# Prefer modern FindPython flow for pybind11 on newer CMake versions.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+if(POLICY CMP0135)
+  cmake_policy(SET CMP0135 NEW)
+endif()
+find_package(OpenCV REQUIRED COMPONENTS core imgproc features2d calib3d)
+find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 set(PYBIND11_FINDPYTHON ON)
+find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
+find_package(pybind11 CONFIG REQUIRED)
 
-find_package(OpenCV REQUIRED)
-find_package(Eigen3 REQUIRED)
-find_package(g2o REQUIRED)
-find_package(Python REQUIRED COMPONENTS Interpreter Development)
-find_package(pybind11 REQUIRED)
+# Reuse a toolchain-provided g2o (the server Docker builder installs it).
+# For a clean standalone build, fetch the pinned source instead.
+find_package(g2o CONFIG QUIET)
+if(NOT g2o_FOUND)
+  include(FetchContent)
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+  set(G2O_BUILD_APPS OFF CACHE BOOL "" FORCE)
+  set(G2O_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(BUILD_UNITTESTS OFF CACHE BOOL "" FORCE)
+  set(G2O_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+  set(G2O_USE_OPENGL OFF CACHE BOOL "" FORCE)
+  set(G2O_USE_LOGGING OFF CACHE BOOL "" FORCE)
+  set(G2O_USE_CHOLMOD OFF CACHE BOOL "" FORCE)
+  set(G2O_USE_CSPARSE OFF CACHE BOOL "" FORCE)
+  set(G2O_BUILD_SLAM2D_TYPES OFF CACHE BOOL "" FORCE)
+  set(G2O_BUILD_SLAM3D_TYPES ON CACHE BOOL "" FORCE)
+  set(G2O_BUILD_SLAM3D_ADDON_TYPES OFF CACHE BOOL "" FORCE)
+  set(G2O_BUILD_SBA_TYPES ON CACHE BOOL "" FORCE)
+  set(G2O_BUILD_ICP_TYPES OFF CACHE BOOL "" FORCE)
+  set(G2O_BUILD_SIM3_TYPES OFF CACHE BOOL "" FORCE)
+  set(BUILD_WITH_MARCH_NATIVE OFF CACHE BOOL "" FORCE)
+  set(DO_SSE_AUTODETECT OFF CACHE BOOL "" FORCE)
+  set(G2O_FAST_MATH OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(g2o
+    URL https://codeload.github.com/RainerKuemmerle/g2o/tar.gz/37d8e5fd9ca31e0eb4d23fcfe0cad87a7a2cea81)
+  FetchContent_MakeAvailable(g2o)
+endif()
 
-
-pybind11_add_module(pose_solver_cpp
-    bindings.cpp
-    src/quadtree.cpp
-    src/hybrid_pose_solver.cpp
-    src/stereo_triangulation.cpp
-    src/orb_matcher.cpp
-    src/deviation_calculator.cpp
-)
-
-target_include_directories(pose_solver_cpp PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${OpenCV_INCLUDE_DIRS}
-    ${EIGEN3_INCLUDE_DIR}
-)
-
-target_link_libraries(pose_solver_cpp PRIVATE 
-    ${OpenCV_LIBS}
-    Eigen3::Eigen
-    g2o::core
-    g2o::stuff
-    g2o::types_sba
-    g2o::types_slam3d
-    g2o::solver_pcg
-)
-
-message(STATUS "--------------------------------------------")
-message(STATUS "OpenCV version: ${OpenCV_VERSION}")
-message(STATUS "G2O found: ${g2o_FOUND}")
-message(STATUS "Eigen3 include: ${EIGEN3_INCLUDE_DIR}")
-message(STATUS "--------------------------------------------")
+pybind11_add_module(pose_solver_cpp NO_EXTRAS bindings.cpp
+  src/quadtree.cpp src/orb_matcher.cpp src/stereo_triangulation.cpp
+  src/hybrid_pose_solver.cpp src/deviation_calculator.cpp)
+target_include_directories(pose_solver_cpp PRIVATE include ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(pose_solver_cpp PRIVATE ${OpenCV_LIBS} Eigen3::Eigen
+  g2o::core g2o::stuff g2o::types_sba g2o::types_slam3d)
+target_compile_options(pose_solver_cpp PRIVATE -Wall -Wextra -Wpedantic)

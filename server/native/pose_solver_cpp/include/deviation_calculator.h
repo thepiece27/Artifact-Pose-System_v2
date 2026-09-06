@@ -16,7 +16,7 @@ struct PoseDeviation {
     double deltaRoll;
 
     double translationMag;   // sqrt(dX^2 + dY^2 + dZ^2)
-    double rotationMag;      // sqrt(pan^2 + tilt^2 + roll^2)
+    double rotationMag;      // SO(3) geodesic angle in degrees (Euler is display-only)
 
     bool withinTransTolerance;
     bool withinRotTolerance;
@@ -30,16 +30,17 @@ struct PoseDeviation {
 };
 
 struct DeviationConfig {
-    double transTolerance = 0.030;  // 30mm — relaxed to match hardware precision
-    double rotTolerance = 3.0;      // 3.0 deg — relaxed to allow convergence
+    double transTolerance = 0.010;  // 10mm — relaxed to match hardware precision
+    double rotTolerance = 1.0;      // 1.0 deg — must be >= servo minimum step
 
     // Motor hardware constraints
     double servoMinDeg = 1.0;       // Minimum servo step (degrees); angles smaller
                                     // than half this are zeroed (dead zone)
     bool sequentialMode = true;     // If true: when both trans+rot needed, send
                                     // translation first; rotation on next iteration
-    double stepsPerMm = 800.0;      // Stepper motor steps per mm
+    double stepsPerMm = 860.0;      // Stepper motor steps per mm
 };
+
 
 class DeviationCalculator {
 public:
@@ -52,7 +53,7 @@ public:
         Output: PoseDeviation with all components
        Math:
         R_deviation = R_current * R_golden^(-1)
-        T_deviation = T_current - T_golden
+        C_deviation = -R_current^T*T_current + R_golden^T*T_golden
         Euler angles extracted from R_deviation
     */
 
@@ -96,18 +97,16 @@ struct MotorCommand {
     // Priority: 0 = no movement, 1 = translation, 2 = rotation, 3 = both
 };
 
-// Apply hardware constraints and compute motor steps.
+// Disabled compatibility function: returns a zero command until kinematics exist.
 // - Rotation angles are rounded to nearest servoMinDeg; angles in the
 //   dead zone (|angle| < 0.5 * servoMinDeg) are zeroed.
 // - Sequential mode: when both translation and rotation are needed,
 //   only translation is sent this step (rotation deferred to next iteration).
 MotorCommand deviationToMotorCommand(
     const PoseDeviation& dev,
-    double stepsPerMm    = 800.0,  // Stepper motor steps/mm
+    double stepsPerMm    = 860.0,  // Stepper motor steps/mm
     double servoMinDeg   = 1.0,    // Minimum servo step (degrees)
-    bool   sequentialMode = true,  // Translation-first priority
-    double transTolerance = 0.030, // 30mm
-    double rotTolerance   = 3.0    // 3.0 deg
+    bool   sequentialMode = true   // Translation-first priority
 );
 
 #endif

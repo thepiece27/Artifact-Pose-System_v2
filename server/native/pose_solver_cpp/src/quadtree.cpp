@@ -14,8 +14,8 @@ QuadNode::~QuadNode() {
 
 //QuadTree
 
-QuadTree::QuadTree(int imageWidth, int imageHeight, int minNodeSize, int maxDepth)
-    : minNodeSize(minNodeSize), maxDepth(maxDepth) {
+QuadTree::QuadTree(int imageWidth, int imageHeight, int minNodeSize, int maxDepth, int featuresPerLeaf)
+    : minNodeSize(minNodeSize), maxDepth(maxDepth), featuresPerLeaf(featuresPerLeaf) {
     root = new QuadNode(Rect2f(0, 0, imageWidth, imageHeight), 0);
 }
 
@@ -68,11 +68,13 @@ void QuadTree::collectBest(QuadNode* node, vector<KeyPoint>& result) {
     if (node->isLeaf) {
         if (!node->keypoints.empty()) {
             // Chọn keypoint có response mạnh nhất trong ô này
-            auto best = max_element(node->keypoints.begin(), node->keypoints.end(),
+            auto ranked = node->keypoints;
+            stable_sort(ranked.begin(), ranked.end(),
                 [](const KeyPoint& a, const KeyPoint& b) {
-                    return a.response < b.response;
+                    return a.response > b.response;
                 });
-            result.push_back(*best);
+            const auto count = std::min(ranked.size(), static_cast<size_t>(featuresPerLeaf));
+            result.insert(result.end(), ranked.begin(), ranked.begin()+count);
         }
         return;
     }
@@ -84,6 +86,9 @@ void QuadTree::collectBest(QuadNode* node, vector<KeyPoint>& result) {
 
 // Phân phối keypoints bằng quadtree
 vector<KeyPoint> QuadTree::distribute(vector<KeyPoint>& keypoints) {
+    for (auto* child : root->children) delete child;
+    root->children.clear();
+    root->isLeaf = true;
     root->keypoints = keypoints;
     subdivide(root);
     vector<KeyPoint> result;
@@ -111,9 +116,13 @@ QuadTreeResult extractWithQuadTree(
     const Mat& image,
     int maxInitialFeatures,
     int minNodeSize,
-    int maxDepth
+    int maxDepth,
+    int featuresPerLeaf
 ) {
     QuadTreeResult result;
+    if (image.empty() || image.depth() != CV_8U || (image.channels()!=1 && image.channels()!=3) ||
+        maxInitialFeatures<=0 || minNodeSize<=0 || maxDepth<=0 || maxDepth>16 || featuresPerLeaf<=0)
+        CV_Error(Error::StsBadArg, "Invalid image or QuadTree configuration");
 
     Mat gray;
     if (image.channels() == 3) {
@@ -127,7 +136,7 @@ QuadTreeResult extractWithQuadTree(
     orb->detect(gray, allKeypoints);
     result.totalDetected = allKeypoints.size();
 
-    QuadTree qt(image.cols, image.rows, minNodeSize, maxDepth);
+    QuadTree qt(image.cols, image.rows, minNodeSize, maxDepth, featuresPerLeaf);
     result.keypoints = qt.distribute(allKeypoints);
     result.gridCells = qt.getLeafBoundaries();
 

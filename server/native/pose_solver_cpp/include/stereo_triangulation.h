@@ -11,7 +11,11 @@ struct StereoConfig {
     cv::Vec3d baselineDirection = cv::Vec3d(1.0, 0.0, 0.0);
 
     double minDisparity = 2.0;
-    double maxReprojError = 5.0;
+    double maxReprojError = 2.0;
+    double maxEpipolarError = 1.5;
+    double minParallaxDegrees = 1.0;
+    double minDepth = 0.05;
+    double maxDepth = 10.0;
 };
 
 // Result of stereo triangulation
@@ -44,18 +48,6 @@ public:
     // Set stereo configuration
     void setConfig(const StereoConfig& config);
 
-    // ============================================================
-    // Main triangulation function
-    // ============================================================
-    // Inputs:
-    //   - pointsLeft: 2D points in left (reference) image
-    //   - pointsRight: corresponding 2D points in right image
-    //
-    // Assumes:
-    //   - Camera at left position: identity pose [I | 0]
-    //   - Camera at right position: [I | baseline * direction]
-    //   - Points are already matched (same index = same physical point)
-    // ============================================================
     StereoTriangulationResult triangulate(
         const std::vector<cv::Point2f>& pointsLeft,
         const std::vector<cv::Point2f>& pointsRight

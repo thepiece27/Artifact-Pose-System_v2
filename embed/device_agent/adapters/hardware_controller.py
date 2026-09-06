@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from threading import Event, Lock
 from typing import Optional
 
 
@@ -50,6 +51,8 @@ class HardwareController:
         self.current_pitch: int = self.HOME_PITCH
         self.current_x_steps: int = 0
         self.current_z_steps: int = 0
+        self._stop_event = Event()
+        self._state_lock = Lock()
 
         self._kit = None
         self._gpio = None
@@ -119,8 +122,9 @@ class HardwareController:
 
             self._kit.servo[self.servo_config.pan_channel].angle = pan_target
             self._kit.servo[self.servo_config.tilt_channel].angle = tilt_target
-            self.current_yaw = pan_target
-            self.current_pitch = tilt_target
+            with self._state_lock:
+                self.current_yaw = pan_target
+                self.current_pitch = tilt_target
         except Exception as exc:
             raise RuntimeError(f"Loi dieu khien servo: {exc}") from exc
 
@@ -133,7 +137,8 @@ class HardwareController:
             dir_pin=self.slider_config.x_dir_pin,
             pulse_delay=None,
         )
-        self.current_x_steps += steps if direction > 0 else -steps
+        with self._state_lock:
+            self.current_x_steps += steps if direction > 0 else -steps
 
     def move_slider_z(self, steps: int, direction: int) -> None:
         """Tinh tien slider truc Z (ho tro bo sung theo context du an)."""
@@ -144,7 +149,8 @@ class HardwareController:
             dir_pin=self.slider_config.z_dir_pin,
             pulse_delay=None,
         )
-        self.current_z_steps += steps if direction > 0 else -steps
+        with self._state_lock:
+            self.current_z_steps += steps if direction > 0 else -steps
 
     def move_slider_x_with_delay(self, steps: int, direction: int, pulse_delay: float) -> None:
         """Tinh tien slider truc X voi pulse_delay override cho profile toc do."""
@@ -155,7 +161,8 @@ class HardwareController:
             dir_pin=self.slider_config.x_dir_pin,
             pulse_delay=pulse_delay,
         )
-        self.current_x_steps += steps if direction > 0 else -steps
+        with self._state_lock:
+            self.current_x_steps += steps if direction > 0 else -steps
 
     def move_slider_z_with_delay(self, steps: int, direction: int, pulse_delay: float) -> None:
         """Tinh tien slider truc Z voi pulse_delay override cho profile toc do."""
@@ -166,7 +173,24 @@ class HardwareController:
             dir_pin=self.slider_config.z_dir_pin,
             pulse_delay=pulse_delay,
         )
-        self.current_z_steps += steps if direction > 0 else -steps
+        with self._state_lock:
+            self.current_z_steps += steps if direction > 0 else -steps
+
+    def emergency_stop(self) -> None:
+        """Stop the active pulse loops as soon as possible and de-energize pins."""
+        self._stop_event.set()
+        if self._gpio is not None:
+            for pin in (
+                self.slider_config.x_pul_pin,
+                self.slider_config.z_pul_pin,
+            ):
+                try:
+                    self._gpio.output(pin, self._gpio.LOW)
+                except Exception:
+                    pass
+
+    def clear_emergency_stop(self) -> None:
+        self._stop_event.clear()
 
     def go_home(self) -> None:
         """Dua servo ve vi tri home (HOME_YAW, HOME_PITCH). Khong anh huong slider."""
@@ -175,6 +199,7 @@ class HardwareController:
     def reset_position(self) -> None:
         """Dua servo ve home va slider ve vi tri luc khoi dong."""
         print(f"[HW] reset_position: servo -> home ({self.HOME_YAW}°, {self.HOME_PITCH}°), slider -> vi tri khoi dong")
+        self.clear_emergency_stop()
         self.go_home()
 
         if self.current_x_steps != 0:
@@ -187,6 +212,7 @@ class HardwareController:
 
     def cleanup(self) -> None:
         """Giai phong tai nguyen phan cung."""
+        self.emergency_stop()
         if self._gpio is not None:
             self._gpio.cleanup()
 
@@ -215,6 +241,8 @@ class HardwareController:
         self._gpio.output(dir_pin, gpio_direction)
 
         for _ in range(steps):
+            if self._stop_event.is_set():
+                raise RuntimeError("Emergency stop active")
             self._gpio.output(pul_pin, self._gpio.HIGH)
             time.sleep(effective_pulse_delay)
             self._gpio.output(pul_pin, self._gpio.LOW)

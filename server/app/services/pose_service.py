@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 from typing import Any
 
 import cv2
 import numpy as np
 
 from app.modules.artifact_pose import common as pose_common
+from app.modules.artifact_pose.geometry import DEFAULT_QUALITY
 from app.modules.artifact_pose import correction as pose_correction
 from app.modules.artifact_pose import initialize as pose_initialize
 from app.core.config import Settings
+from app.core.uploads import safe_component
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -29,6 +32,13 @@ class PoseService:
         self._settings = settings
         self._module_root = Path(__file__).resolve().parents[1] / "modules" / "artifact_pose"
 
+    def _quality(self):
+        return replace(
+            DEFAULT_QUALITY,
+            translation_tolerance_m=self._settings.trans_tolerance_mm / 1000.0,
+            rotation_tolerance_deg=self._settings.rot_tolerance_deg,
+        )
+
     # -- Per-artifact golden pose path -----------------------------------------
 
     def _golden_pose_path(self, artifact_id: str | None) -> Path:
@@ -37,7 +47,7 @@ class PoseService:
             return (
                 self._settings.uploads_dir
                 / "golden_poses"
-                / artifact_id.strip()
+                / safe_component(artifact_id, field="artifact_id")
                 / "golden_pose.yaml"
             )
         return self._settings.artifact_golden_pose
@@ -50,7 +60,7 @@ class PoseService:
         global_path = self._settings.artifact_golden_pose
 
         old_data_path = (
-            self._settings.data_dir / "golden_poses" / artifact_id.strip() / "golden_pose.yaml"
+            self._settings.data_dir / "golden_poses" / safe_component(artifact_id, field="artifact_id") / "golden_pose.yaml"
             if artifact_id and artifact_id.strip() else None
         )
         source = None
@@ -121,15 +131,16 @@ class PoseService:
             raise RuntimeError(
                 f"Golden pose not found for artifact '{artifact_id}'"
             )
-        golden_pose = pose_common.load_golden_pose(golden_pose_path)
-        if golden_pose is None:
-            raise RuntimeError(
-                f"Golden pose load failed for artifact '{artifact_id}': {golden_pose_path}"
-            )
         image = cv2.imread(str(image_path))
         if image is None:
             raise RuntimeError(f"Can not read image: {image_path}")
-        result = pose_correction.run_correction_step(image, K, D, golden_pose)
+        golden_pose = pose_common.load_golden_pose(
+            golden_pose_path, K=K, D=D,
+            image_size=(int(image.shape[1]), int(image.shape[0]))
+        )
+        result = pose_correction.run_correction_step(
+            image, K, D, golden_pose, backend="auto", quality=self._quality()
+        )
         result["integrated_module"] = True
         result["g2o_enabled"] = bool(pose_common.HAS_CPP)
         return _to_jsonable(result)
@@ -154,11 +165,8 @@ class PoseService:
         output_path = self._golden_pose_path(artifact_id)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         result = pose_initialize.run_initialization(
-            left,
-            right,
-            K,
-            D,
-            output_pose_path=output_path,
+            left, right, K, D, output=output_path, strategy="hybrid", backend="auto",
+            quality=self._quality(),
         )
         if result is None:
             raise RuntimeError("Golden initialization failed")

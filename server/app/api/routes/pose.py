@@ -8,10 +8,9 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_container, get_current_user, get_optional_current_user
+from app.api.dependencies import get_container, get_current_user, require_device_access
 from app.core.database import get_db
 from app.models.artifact import Artifact, Image, ImageType
-from app.models.user import User
 from app.schemas.pose import (
     GoldenPoseStatusResponse,
     PoseCorrectionResponse,
@@ -19,28 +18,22 @@ from app.schemas.pose import (
     PoseInitializeResponse,
 )
 from app.services.state import AppContainer
+from app.core.uploads import safe_component, validate_image_bytes
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-async def _save_temp_upload(folder: Path, file: UploadFile) -> Path:
+async def _save_temp_upload(folder: Path, file: UploadFile, container: AppContainer) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
-    safe_name = (file.filename or "upload.png").replace("/", "_").replace("\\", "_")
+    safe_name = safe_component(Path(file.filename or "upload.png").name, field="filename", max_length=120)
+    content = await file.read(container.settings.max_upload_bytes + 1)
+    validate_image_bytes(content, max_bytes=container.settings.max_upload_bytes,
+                         max_pixels=container.settings.max_image_pixels)
     target = folder / f"{int(time.time() * 1000)}_{safe_name}"
-    target.write_bytes(await file.read())
+    target.write_bytes(content)
     return target
-
-
-def _is_registered_device(container: AppContainer, device_code: str | None) -> bool:
-    if not device_code:
-        return False
-    normalized = device_code.strip()
-    return any(
-        item.get("device_id") == normalized
-        for item in container.device_registry.list_all()
-    )
 
 
 @router.get("/pose/health", response_model=PoseHealthResponse)
@@ -58,12 +51,14 @@ async def pose_correct(
     _=Depends(get_current_user),
 ) -> PoseCorrectionResponse:
     temp_dir = container.settings.uploads_dir / "pose"
-    image_path = await _save_temp_upload(temp_dir, file)
+    image_path = await _save_temp_upload(temp_dir, file, container)
 
     try:
         result = container.pose_service.correct_image(image_path)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        image_path.unlink(missing_ok=True)
 
     return PoseCorrectionResponse(ok=True, result=result)
 
@@ -77,18 +72,11 @@ async def initialize_golden(
     device_code: str | None = Form(None),
     container: AppContainer = Depends(get_container),
     db: Session = Depends(get_db),
-    current_user: User | None = Depends(get_optional_current_user),
+    _auth=Depends(require_device_access),
 ) -> PoseInitializeResponse:
-    upload_device_code = (device_code or device_id or "").strip()
-    if current_user is None and not _is_registered_device(container, upload_device_code):
-        raise HTTPException(
-            status_code=403,
-            detail="Authenticated user or registered device is required",
-        )
-
     temp_dir = container.settings.uploads_dir / "pose_init"
-    left_path = await _save_temp_upload(temp_dir, left_file)
-    right_path = await _save_temp_upload(temp_dir, right_file)
+    left_path = await _save_temp_upload(temp_dir, left_file, container)
+    right_path = await _save_temp_upload(temp_dir, right_file, container)
 
     try:
         result = container.pose_service.initialize_golden(
@@ -97,6 +85,9 @@ async def initialize_golden(
     except Exception as exc:
         logger.error("[initialize_golden] FAILED: %s", exc, exc_info=True)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        left_path.unlink(missing_ok=True)
+        right_path.unlink(missing_ok=True)
 
     # Auto-extract artifact_id from filename if Pi didn't send it as form field.
     # Pi saves files as: stereo_left_{artifact_id}_{ts_ns}.png
@@ -111,9 +102,10 @@ async def initialize_golden(
         artifact = db.query(Artifact).filter(Artifact.artifact_id == artifact_id).first()
         if artifact:
             ts_ms = int(time.time() * 1000)
-            golden_dir = container.settings.uploads_dir / "artifacts" / artifact_id
+            safe_artifact_id = safe_component(artifact_id, field="artifact_id")
+            golden_dir = container.settings.uploads_dir / "artifacts" / safe_artifact_id
             golden_dir.mkdir(parents=True, exist_ok=True)
-            golden_left_path = golden_dir / f"golden_left_{artifact_id}_{ts_ms}.png"
+            golden_left_path = golden_dir / f"golden_left_{safe_artifact_id}_{ts_ms}.png"
             golden_left_path.write_bytes(left_path.read_bytes())
 
             baseline_image = Image(

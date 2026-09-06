@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field
 
 
 class DeviceIdRequest(BaseModel):
-    machine_hash: str = Field(min_length=1)
-    preferred_device_id: str | None = None
+    machine_hash: str = Field(min_length=1, max_length=256)
+    preferred_device_id: str | None = Field(default=None, max_length=100)
 
 
 class DeviceIdResponse(BaseModel):
@@ -26,14 +26,14 @@ class MoveCommand(BaseModel):
     action: str
     task_id: str | None = None
     direction: str = "none"
-    angle: float = 0.0
-    step: int = 0
-    yaw_deg: float | None = None
-    pitch_deg: float | None = None
-    yaw_delta: float = 0.0
-    pitch_delta: float = 0.0
-    x_steps: int = 0
-    z_steps: int = 0
+    angle: float = Field(default=0.0, ge=-180.0, le=180.0)
+    step: int = Field(default=0, ge=0, le=100_000)
+    yaw_deg: float | None = Field(default=None, ge=-180.0, le=180.0)
+    pitch_deg: float | None = Field(default=None, ge=-180.0, le=180.0)
+    yaw_delta: float = Field(default=0.0, ge=-180.0, le=180.0)
+    pitch_delta: float = Field(default=0.0, ge=-180.0, le=180.0)
+    x_steps: int = Field(default=0, ge=0, le=100_000)
+    z_steps: int = Field(default=0, ge=0, le=100_000)
     x_dir: int = 1
     z_dir: int = 1
     artifact_id: str | None = None
@@ -50,6 +50,11 @@ class MoveCommand(BaseModel):
     movement_steps: list[dict[str, Any]] | None = None
     capture_after_move: dict[str, Any] | bool | None = None
     workflow: dict[str, Any] | None = None
+    alignment_phase: str | None = None
+    alignment_iteration: int | None = Field(default=None, ge=0, le=1000)
+    device_id: str | None = None
+    failure_code: str | None = None
+    reason: str | None = None
 
 
 class QueueMoveResponse(BaseModel):

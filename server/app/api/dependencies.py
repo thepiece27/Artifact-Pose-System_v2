@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fastapi import Depends, HTTPException, Request, status
+import hmac
+from fastapi import Depends, HTTPException, Request, Header, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -74,3 +75,34 @@ def require_admin(current: User = Depends(get_current_user)) -> User:
             detail="Admin role required",
         )
     return current
+
+
+def require_device_access(
+    request: Request,
+    x_device_key: str | None = Header(default=None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    db: Session = Depends(get_db),
+) -> User | None:
+    """Authorize device transport with a secret key or an operator JWT.
+
+    Device endpoints must not be anonymously reachable. The key is compared
+    in constant time and is never logged or persisted.
+    """
+    settings = request.app.state.container.settings
+    expected = settings.device_api_key.strip()
+    if expected and x_device_key and hmac.compare_digest(x_device_key, expected):
+        return None
+    if credentials is not None and credentials.credentials:
+        return _user_from_token(credentials.credentials, db)
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Device authentication required")
+
+
+def require_device_enrollment(
+    request: Request,
+    x_enrollment_key: str | None = Header(default=None),
+) -> None:
+    expected = request.app.state.container.settings.device_enrollment_key.strip()
+    if not expected or not x_enrollment_key or not hmac.compare_digest(x_enrollment_key, expected):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Device enrollment is not authorized")

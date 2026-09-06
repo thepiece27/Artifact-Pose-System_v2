@@ -1,12 +1,7 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
-
 class ApiConfig {
-  // IP CỦA MÁY TÍNH CHẠY SERVER (Đã cập nhật theo yêu cầu: 192.168.1.169)
-  static const String _pcIp = '192.168.1.169'; 
-
-  static const String _defaultUrl = kIsWeb
-      ? 'http://127.0.0.1:8000'
-      : 'http://$_pcIp:8000';
+  // Supply a device/LAN URL per build with --dart-define=API_BASE_URL=... .
+  // Do not bake a private LAN address into the release binary.
+  static const String _defaultUrl = 'http://127.0.0.1:8000';
 
   static const String baseUrl = String.fromEnvironment(
     'API_BASE_URL',

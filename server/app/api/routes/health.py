@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
-from app.api.dependencies import get_container
+from app.api.dependencies import get_container, get_current_user
 from app.services.state import AppContainer
 
 router = APIRouter()
@@ -20,16 +20,25 @@ def root() -> dict[str, str]:
 
 
 @router.get("/health")
-def health(container: AppContainer = Depends(get_container)) -> dict[str, str]:
+def health(response: Response, container: AppContainer = Depends(get_container)) -> dict[str, str]:
     state = container.mqtt_bridge.state()["state"]
+    model_state = container.model_service.readiness()
+    status = "ok"
+    if container.settings.require_model_for_readiness and not model_state["loaded"]:
+        status = "not_ready"
+        response.status_code = 503
     return {
-        "status": "ok",
+        "status": status,
         "mqtt_connected": str(bool(state.get("connected"))).lower(),
+        "model_loaded": str(model_state["loaded"]).lower(),
     }
 
 
 @router.get("/mqtt/health")
-def mqtt_health(container: AppContainer = Depends(get_container)) -> dict:
+def mqtt_health(
+    container: AppContainer = Depends(get_container),
+    _=Depends(get_current_user),
+) -> dict:
     return {
         "ok": True,
         **container.mqtt_bridge.state(),
@@ -40,6 +49,7 @@ def mqtt_health(container: AppContainer = Depends(get_container)) -> dict:
 def mqtt_events(
     limit: int = 100,
     container: AppContainer = Depends(get_container),
+    _=Depends(get_current_user),
 ) -> dict:
     safe_limit = max(1, min(500, int(limit)))
     log_file = container.settings.mqtt_event_log_file

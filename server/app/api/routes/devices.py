@@ -4,10 +4,10 @@ from datetime import datetime, timezone
 import time
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_container, get_current_user
+from app.api.dependencies import get_container, get_current_user, require_device_access, require_device_enrollment
 from app.core.database import get_db
 from app.models.iot_device import IotDevice, DeviceStatus
 from app.models.user import User
@@ -108,6 +108,7 @@ def get_device_id(
     req: DeviceIdRequest,
     container: AppContainer = Depends(get_container),
     db: Session = Depends(get_db),
+    _auth: None = Depends(require_device_enrollment),
 ) -> DeviceIdResponse:
     try:
         device_code = container.device_registry.allocate_device_id(
@@ -135,7 +136,10 @@ def queue_move(
     device_code: str,
     cmd: MoveCommand,
     container: AppContainer = Depends(get_container),
+    _auth: User | None = Depends(require_device_access),
 ) -> QueueMoveResponse:
+    if not container.mqtt_bridge._valid_device_id(device_code):
+        raise HTTPException(status_code=400, detail="Invalid device code")
     payload = cmd.dict()
     if not payload.get("task_id"):
         payload["task_id"] = container.command_service.build_task_id()
@@ -143,11 +147,18 @@ def queue_move(
     published, publish_result = container.mqtt_bridge.publish_command(device_code, payload)
     queued = 0
     if not published:
-        queued = container.command_service.queue_command(device_code, payload)
+        # The current edge agent consumes MQTT only. Reporting an in-memory
+        # queue as success would silently lose commands; fail explicitly until
+        # a durable authenticated polling worker is deployed.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"MQTT command delivery unavailable: {publish_result}",
+            headers={"Retry-After": "3"},
+        )
 
     return QueueMoveResponse(
         ok=True,
-        mode="mqtt" if published else "http_queue_fallback",
+        mode="mqtt",
         published=published,
         topic=publish_result if published else None,
         publish_error=None if published else publish_result,
@@ -161,7 +172,10 @@ def poll_move_command(
     device_code: str,
     req: MoveCommandRequest | None = None,
     container: AppContainer = Depends(get_container),
+    _auth: User | None = Depends(require_device_access),
 ) -> MoveCommand:
+    if not container.mqtt_bridge._valid_device_id(device_code):
+        raise HTTPException(status_code=400, detail="Invalid device code")
     if req is not None and req.device_id != device_code:
         raise HTTPException(status_code=400, detail="device_id mismatch")
     payload = container.command_service.pop_next_command(device_code)
@@ -172,7 +186,10 @@ def poll_move_command(
 def device_status(
     device_code: str,
     container: AppContainer = Depends(get_container),
+    _auth: User | None = Depends(require_device_access),
 ) -> DeviceStatusResponse:
+    if not container.mqtt_bridge._valid_device_id(device_code):
+        raise HTTPException(status_code=400, detail="Invalid device code")
     return DeviceStatusResponse(
         ok=True,
         device_id=device_code,
@@ -185,7 +202,10 @@ def device_acks(
     device_code: str,
     limit: int = Query(default=20, ge=1, le=200),
     container: AppContainer = Depends(get_container),
+    _auth: User | None = Depends(require_device_access),
 ) -> DeviceAcksResponse:
+    if not container.mqtt_bridge._valid_device_id(device_code):
+        raise HTTPException(status_code=400, detail="Invalid device code")
     history = container.command_service.get_acks(device_code, limit=limit)
     return DeviceAcksResponse(
         ok=True,

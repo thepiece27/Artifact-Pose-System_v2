@@ -9,6 +9,7 @@ import '../../services/api_config.dart';
 import '../../theme.dart';
 import '../../widgets/responsive_scaffold.dart';
 import '../../widgets/status_badge.dart';
+import '../../widgets/authenticated_image.dart';
 import 'add_artifact_screen.dart';
 import 'artifact_detail_screen.dart';
 
@@ -174,7 +175,7 @@ class _Thumbnail extends StatelessWidget {
     }
     return ClipRRect(
       borderRadius: BorderRadius.circular(14),
-      child: Image.network(
+      child: AuthenticatedImage(
         ApiConfig.resolveAssetUrl(imageUrl),
         width: 64, height: 64, fit: BoxFit.cover,
         errorBuilder: (_, __, ___) => Container(

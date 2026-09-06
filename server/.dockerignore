@@ -5,6 +5,7 @@ data/visualization/
 
 # Env local - container dung .env.docker qua docker-compose
 .env
+.env.*
 .env.example
 env.docker.example
 

@@ -7,6 +7,7 @@ from app.api.routes import (
     health,
     inspections,
     models,
+    media,
     pose,
     schedules,
     users,
@@ -22,5 +23,6 @@ router.include_router(schedules.router, tags=["schedules"])
 router.include_router(devices.router, tags=["devices"])
 router.include_router(inspections.router, tags=["inspections"])
 router.include_router(models.router, tags=["models"])
+router.include_router(media.router, tags=["media"])
 router.include_router(pose.router, tags=["pose"])
 router.include_router(workflows.router, tags=["workflows"])

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import os
 from pathlib import Path
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 from typing import Any
 
 import numpy as np
@@ -212,6 +214,7 @@ class LoadedModel:
     labels: list[str]
     loaded_at: str
     runtime_model: BaseRuntimeModel
+    sha256: str | None = None
 
 
 class ModelService:
@@ -219,10 +222,28 @@ class ModelService:
         self._settings = settings
         self._models: dict[str, LoadedModel] = {}
         self._lock = Lock()
+        # Inference is CPU/GPU heavy.  Bound concurrent calls so API workers
+        # cannot exhaust RAM by loading/predicting many images at once.
+        slots = max(1, int(os.getenv("MODEL_MAX_CONCURRENT_INFERENCES", "1")))
+        self._inference_slots = BoundedSemaphore(slots)
+        self._inference_acquire_timeout = max(
+            0.1, float(os.getenv("MODEL_INFERENCE_QUEUE_TIMEOUT_SEC", "5"))
+        )
 
     def list_models(self) -> list[LoadedModel]:
         with self._lock:
             return list(self._models.values())
+
+    def readiness(self) -> dict[str, Any]:
+        with self._lock:
+            models = list(self._models.values())
+        return {
+            "loaded": bool(models),
+            "models": [
+                {"name": m.name, "backend": m.backend, "path": m.path, "loaded_at": m.loaded_at}
+                for m in models
+            ],
+        }
 
     def load_model(
         self,
@@ -231,19 +252,26 @@ class ModelService:
         backend: str,
         labels: list[str] | None = None,
     ) -> LoadedModel:
+        name = str(name).strip()
+        if not name or len(name) > 64 or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-" for ch in name):
+            raise ValueError("Invalid model name")
         runtime_backend = backend.lower().strip() or "auto"
         model_path: Path | None = None
 
         if path:
-            candidate = Path(path)
-            if not candidate.is_absolute():
-                candidate = self._settings.model_dir / candidate
-            model_path = candidate
+            model_path = self._resolve_model_path(path, backend=runtime_backend)
+        elif self._settings.default_ai_model_path.strip() and name == self._settings.default_ai_model_name:
+            model_path = self._resolve_model_path(
+                self._settings.default_ai_model_path, backend=runtime_backend
+            )
 
         if runtime_backend == "auto":
             runtime_backend = self._detect_backend(model_path)
+        if model_path is not None:
+            model_path = self._resolve_model_path(str(model_path), backend=runtime_backend)
 
         runtime_model = self._build_runtime_model(runtime_backend, model_path)
+        model_sha256 = self._sha256_file(model_path) if model_path is not None else None
 
         loaded = LoadedModel(
             name=name,
@@ -252,6 +280,7 @@ class ModelService:
             labels=labels or [],
             loaded_at=_utc_now_iso(),
             runtime_model=runtime_model,
+            sha256=model_sha256,
         )
 
         with self._lock:
@@ -270,7 +299,11 @@ class ModelService:
         if loaded is None:
             raise KeyError(f"Model '{name}' is not loaded")
 
-        result = loaded.runtime_model.predict(input_data)
+        self._acquire_inference_slot()
+        try:
+            result = loaded.runtime_model.predict(input_data)
+        finally:
+            self._inference_slots.release()
         return _to_jsonable(result)
 
     def detect_image(self, name: str, image_bytes: bytes) -> Any:
@@ -285,7 +318,11 @@ class ModelService:
                 f"Model '{name}' backend '{loaded.backend}' does not support image detection"
             )
 
-        result = loaded.runtime_model.predict(image_bytes)
+        self._acquire_inference_slot()
+        try:
+            result = loaded.runtime_model.predict(image_bytes)
+        finally:
+            self._inference_slots.release()
         return _to_jsonable(result)
 
     def detect_crops_batch(
@@ -308,7 +345,58 @@ class ModelService:
                 f"Model '{name}' does not support batch crop detection"
             )
 
-        return loaded.runtime_model.predict_crops_batch(crop_list, conf=conf, sub_batch=sub_batch)
+        self._acquire_inference_slot()
+        try:
+            return loaded.runtime_model.predict_crops_batch(crop_list, conf=conf, sub_batch=sub_batch)
+        finally:
+            self._inference_slots.release()
+
+    def _acquire_inference_slot(self) -> None:
+        if not self._inference_slots.acquire(timeout=self._inference_acquire_timeout):
+            raise RuntimeError("Model inference queue is full; retry later")
+
+    def _resolve_model_path(self, path: str, backend: str = "auto") -> Path:
+        """Resolve a model only inside the configured read-only model root."""
+        raw = Path(path)
+        root = self._settings.model_dir.resolve()
+        candidate = (raw if raw.is_absolute() else root / raw).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("Model path must be inside MODEL_DIR") from exc
+        if candidate.is_dir():
+            raise ValueError("Model path must be a file")
+        if candidate.exists():
+            if candidate.stat().st_size <= 0:
+                raise ValueError("Model file is empty")
+            if candidate.stat().st_size > self._settings.max_model_bytes:
+                raise ValueError(
+                    f"Model file exceeds configured limit ({self._settings.max_model_bytes} bytes)"
+                )
+            allowed_suffixes = {
+                "onnx": {".onnx"},
+                "torch": {".pt", ".pth", ".torchscript"},
+                "torchscript": {".pt", ".pth", ".torchscript"},
+                "yolo": {".pt", ".pth"},
+                "ultralytics": {".pt", ".pth"},
+            }
+            # Backend-specific extension checks prevent accidentally loading
+            # an arbitrary file through a deserializing runtime.
+            allowed = allowed_suffixes.get(backend)
+            if allowed:
+                if candidate.suffix.lower() not in allowed:
+                    raise ValueError(f"Model extension {candidate.suffix} is not valid for backend {backend}")
+        return candidate
+
+    @staticmethod
+    def _sha256_file(path: Path | None) -> str | None:
+        if path is None:
+            return None
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     @staticmethod
     def _detect_backend(model_path: Path | None) -> str:

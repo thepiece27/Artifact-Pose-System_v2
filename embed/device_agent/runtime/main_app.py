@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from typing import Any, Dict
 
@@ -167,6 +168,8 @@ class AppConfig:
     mqtt_status_topic_template: str = field(
         default_factory=lambda: _env_str("MQTT_STATUS_TOPIC_TEMPLATE", "status/{device_id}")
     )
+    device_api_key: str = field(default_factory=lambda: _env_str("DEVICE_API_KEY", ""))
+    device_enrollment_key: str = field(default_factory=lambda: _env_str("DEVICE_ENROLLMENT_KEY", ""))
     mqtt_reconnect_initial_delay_sec: float = field(
         default_factory=lambda: _env_float("MQTT_RECONNECT_INITIAL_DELAY_SEC", 2.0)
     )
@@ -209,6 +212,25 @@ class AppConfig:
         default_factory=lambda: _env_bool("AUTO_CAPTURE_AFTER_MOVE", True)
     )
 
+    # Safety limits. These are intentionally conservative and can only be
+    # reduced/adjusted by explicit device configuration, never by an MQTT
+    # command payload.
+    max_command_steps: int = field(
+        default_factory=lambda: max(1, _env_int("MAX_COMMAND_STEPS", 100000))
+    )
+    max_x_travel_steps: int = field(
+        default_factory=lambda: max(1, _env_int("MAX_X_TRAVEL_STEPS", 200000))
+    )
+    max_z_travel_steps: int = field(
+        default_factory=lambda: max(1, _env_int("MAX_Z_TRAVEL_STEPS", 200000))
+    )
+    max_servo_delta_deg: float = field(
+        default_factory=lambda: max(1.0, _env_float("MAX_SERVO_DELTA_DEG", 45.0))
+    )
+    command_queue_size: int = field(
+        default_factory=lambda: max(1, _env_int("COMMAND_QUEUE_SIZE", 32))
+    )
+
 
 class MainApp:
     """Thin-client tren Raspberry Pi: nhan lenh server va thuc thi."""
@@ -223,6 +245,8 @@ class MainApp:
             APIConfig(
                 base_url=config.server_base_url,
                 device_id=config.device_id or "unassigned",
+                device_api_key=config.device_api_key,
+                device_enrollment_key=config.device_enrollment_key,
             )
         )
         self._resolve_device_id()
@@ -239,6 +263,14 @@ class MainApp:
             max_entries=self.config.task_id_cache_max_entries,
         )
         self._command_lock = Lock()
+        self._command_queue: Queue[Dict[str, Any]] = Queue(maxsize=self.config.command_queue_size)
+        self._command_worker_stop = Event()
+        self._command_worker = Thread(
+            target=self._command_worker_loop,
+            daemon=True,
+            name="command-worker",
+        )
+        self._command_worker.start()
 
         try:
             import paho.mqtt.client as mqtt_client
@@ -321,6 +353,11 @@ class MainApp:
         old_device_id = self.config.device_id
         self.config.device_id = server_device_id
         self.api_client.config.device_id = server_device_id
+        try:
+            self._mqtt_client.disconnect()
+            self._mqtt_client.loop_stop()
+        except Exception:
+            pass
         self._mqtt_client = self._build_mqtt_client()
         print(
             f"[APP] Cap nhat device_id tu server: {old_device_id} -> {self.config.device_id}"
@@ -425,11 +462,28 @@ class MainApp:
         except Exception as exc:
             print(f"[MQTT] Loi parse command: {exc}")
             return
+        task_id = str(command.get("task_id", "")).strip()
+        if not task_id:
+            print("[MQTT] Tu choi command khong co task_id")
+            return
         print(f"[MQTT] Nhan lenh: {command}")
-        # Chay command trong background thread de MQTT network loop khong bi block.
-        # Neu chay trong on_message (= MQTT thread), loop_forever() khong the gui
-        # PINGREQ trong khi stepper/capture dang chay → broker ngat ket noi sau keepalive.
-        Thread(target=self._execute_and_ack, args=(command,), daemon=True).start()
+        # MQTT callback must remain non-blocking. A bounded queue provides
+        # backpressure instead of creating an unbounded thread per message.
+        try:
+            self._command_queue.put_nowait(command)
+        except Full:
+            self._publish_ack(command, {"status": "busy", "reason": "command_queue_full"})
+
+    def _command_worker_loop(self) -> None:
+        while not self._command_worker_stop.is_set():
+            try:
+                command = self._command_queue.get(timeout=0.5)
+            except Empty:
+                continue
+            try:
+                self._execute_and_ack(command)
+            finally:
+                self._command_queue.task_done()
 
     def _execute_and_ack(self, command: Dict[str, Any]) -> None:
         """Thuc thi command va gui ACK (chay trong background thread rieng)."""
@@ -485,6 +539,11 @@ class MainApp:
                 self.hardware.reset_position()
                 self._mark_processed_task(task_id)
                 return {"status": "ok", "action": action}
+
+            if action in {"emergency_stop", "stop", "estop"}:
+                self.hardware.emergency_stop()
+                self._mark_processed_task(task_id)
+                return {"status": "ok", "action": "emergency_stop"}
 
             if action == "pan_tilt":
                 self._handle_pan_tilt(command)
@@ -567,7 +626,7 @@ class MainApp:
 
     def _handle_pan_tilt(self, command: Dict[str, Any]) -> None:
         direction = str(command.get("direction", "")).lower()
-        angle = int(command.get("angle", 0.0))
+        angle = min(abs(int(command.get("angle", 0.0))), int(self.config.max_servo_delta_deg))
 
         yaw = self.hardware.current_yaw
         pitch = self.hardware.current_pitch
@@ -584,19 +643,41 @@ class MainApp:
             yaw = int(command.get("yaw_deg", yaw))
             pitch = int(command.get("pitch_deg", pitch))
 
+        yaw = self.hardware.current_yaw + max(
+            -self.config.max_servo_delta_deg,
+            min(self.config.max_servo_delta_deg, yaw - self.hardware.current_yaw),
+        )
+        pitch = self.hardware.current_pitch + max(
+            -self.config.max_servo_delta_deg,
+            min(self.config.max_servo_delta_deg, pitch - self.hardware.current_pitch),
+        )
+
         self.hardware.set_pan_tilt(yaw, pitch)
 
     def _handle_slider_x(self, command: Dict[str, Any]) -> None:
         direction = str(command.get("direction", "")).lower()
-        step = int(command.get("step", command.get("x_steps", 0)))
+        step = self._bounded_steps(
+            "x", int(command.get("step", command.get("x_steps", 0))),
+            1 if direction in {"forward", "right", "positive"} else -1,
+        )
         dir_sign = 1 if direction in {"forward", "right", "positive"} else -1
-        self._move_slider_x_with_profile(abs(step), dir_sign)
+        self._move_slider_x_with_profile(step, dir_sign)
 
     def _handle_slider_z(self, command: Dict[str, Any]) -> None:
         direction = str(command.get("direction", "")).lower()
-        step = int(command.get("step", command.get("z_steps", 0)))
+        step = self._bounded_steps(
+            "z", int(command.get("step", command.get("z_steps", 0))),
+            1 if direction in {"forward", "up", "positive"} else -1,
+        )
         dir_sign = 1 if direction in {"forward", "up", "positive"} else -1
-        self._move_slider_z_with_profile(abs(step), dir_sign)
+        self._move_slider_z_with_profile(step, dir_sign)
+
+    def _bounded_steps(self, axis: str, requested: int, direction: int) -> int:
+        requested = min(abs(int(requested)), self.config.max_command_steps)
+        current = self.hardware.current_x_steps if axis == "x" else self.hardware.current_z_steps
+        travel = self.config.max_x_travel_steps if axis == "x" else self.config.max_z_travel_steps
+        remaining = travel - current if direction > 0 else travel + current
+        return max(0, min(requested, remaining))
 
     def _handle_compound_move(self, command: Dict[str, Any]) -> None:
         # Ho tro schema server gui bo tham so tong hop sau khi tinh pose tren server.
@@ -610,8 +691,8 @@ class MainApp:
         pitch_target = self._safe_float(command.get("pitch_deg"), self.hardware.current_pitch)
         yaw_target += self._safe_float(command.get("yaw_delta"), 0.0)
         pitch_target += self._safe_float(command.get("pitch_delta"), 0.0)
-        x_steps = abs(int(command.get("x_steps", 0)))
-        z_steps = abs(int(command.get("z_steps", 0)))
+        x_steps = min(abs(int(command.get("x_steps", 0))), self.config.max_command_steps)
+        z_steps = min(abs(int(command.get("z_steps", 0))), self.config.max_command_steps)
         x_dir = int(command.get("x_dir", 1))
         z_dir = int(command.get("z_dir", 1))
 
@@ -634,17 +715,23 @@ class MainApp:
                     )
                 elif axis in {"slider_x", "x"} and not has_flat_steps:
                     delta = int(step.get("steps", step.get("delta", step.get("value", 0))))
-                    x_steps += abs(delta)
+                    x_steps = min(self.config.max_command_steps, x_steps + abs(delta))
                     if delta != 0:
                         x_dir = 1 if delta > 0 else -1
                 elif axis in {"slider_z", "z"} and not has_flat_steps:
                     delta = int(step.get("steps", step.get("delta", step.get("value", 0))))
-                    z_steps += abs(delta)
+                    z_steps = min(self.config.max_command_steps, z_steps + abs(delta))
                     if delta != 0:
                         z_dir = 1 if delta > 0 else -1
 
         yaw_delta_applied   = yaw_target   - self.hardware.current_yaw
         pitch_delta_applied = pitch_target - self.hardware.current_pitch
+        yaw_delta_applied = max(-self.config.max_servo_delta_deg, min(self.config.max_servo_delta_deg, yaw_delta_applied))
+        pitch_delta_applied = max(-self.config.max_servo_delta_deg, min(self.config.max_servo_delta_deg, pitch_delta_applied))
+        yaw_target = self.hardware.current_yaw + yaw_delta_applied
+        pitch_target = self.hardware.current_pitch + pitch_delta_applied
+        x_steps = self._bounded_steps("x", x_steps, 1 if x_dir >= 0 else -1)
+        z_steps = self._bounded_steps("z", z_steps, 1 if z_dir >= 0 else -1)
         x_steps_before = self.hardware.current_x_steps
         z_steps_before = self.hardware.current_z_steps
 
@@ -984,6 +1071,9 @@ class MainApp:
         except KeyboardInterrupt:
             print("[APP] Dung chuong trinh")
         finally:
+            self._command_worker_stop.set()
+            if self._command_worker.is_alive():
+                self._command_worker.join(timeout=2.0)
             try:
                 self._publish_status("offline")
                 self._mqtt_client.disconnect()

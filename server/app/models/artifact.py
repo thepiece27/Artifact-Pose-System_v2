@@ -93,7 +93,7 @@ class ImageComparison(Base):
 
     comparison_id = Column(String(6), primary_key=True, index=True, default=_gen_id)
     artifact_id = Column(String(6), ForeignKey("artifacts.artifact_id", ondelete="CASCADE"), nullable=False)
-    previous_image_id = Column(String(6), ForeignKey("images.image_id"), nullable=False)
+    previous_image_id = Column(String(6), ForeignKey("images.image_id"), nullable=True)
     current_image_id = Column(String(6), ForeignKey("images.image_id"), nullable=False)
     schedule_id = Column(String(6), ForeignKey("schedules.id"), nullable=True)
     

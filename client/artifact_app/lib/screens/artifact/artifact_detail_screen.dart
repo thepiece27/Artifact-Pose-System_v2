@@ -11,6 +11,7 @@ import '../../services/token_storage.dart';
 import '../../theme.dart';
 import '../../widgets/responsive_scaffold.dart';
 import '../../widgets/status_badge.dart';
+import '../../widgets/authenticated_image.dart';
 import '../devices/device_workflow_screen.dart';
 import '../inspect/result_screen.dart';
 import 'edit_artifact_screen.dart';
@@ -382,7 +383,7 @@ class _InlineHistoryItem extends StatelessWidget {
               ClipRRect(
                 borderRadius: BorderRadius.circular(10),
                 child: thumbUrl.isNotEmpty
-                    ? Image.network(thumbUrl, width: 56, height: 56, fit: BoxFit.cover,
+                    ? AuthenticatedImage(thumbUrl, width: 56, height: 56, fit: BoxFit.cover,
                         errorBuilder: (_, __, ___) => _fallbackThumb())
                     : _fallbackThumb(),
               ),
@@ -450,7 +451,7 @@ class _ReferenceImage extends StatelessWidget {
           child: ClipRRect(
             borderRadius: BorderRadius.circular(20),
             child: artifact.hasImage && url.isNotEmpty
-                ? Image.network(url, fit: BoxFit.cover,
+                ? AuthenticatedImage(url, fit: BoxFit.cover,
                     errorBuilder: (_, __, ___) => _placeholder(broken: true))
                 : _placeholder(),
           ),

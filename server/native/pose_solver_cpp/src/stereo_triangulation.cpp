@@ -5,7 +5,7 @@ using namespace std;
 using namespace Eigen;
 
 StereoTriangulator::StereoTriangulator()
-    : paramsSet_(false), fx_(0), fy_(0), cx_(0), cy_(0) {}
+    : fx_(0), fy_(0), cx_(0), cy_(0), paramsSet_(false) {}
 
 void StereoTriangulator::setCameraParams(const Mat& cameraMatrix, const Mat& distCoeffs) {
     cameraMatrix_ = cameraMatrix.clone();
@@ -21,6 +21,9 @@ void StereoTriangulator::setCameraParams(const Mat& cameraMatrix, const Mat& dis
 }
 
 void StereoTriangulator::setConfig(const StereoConfig& config) {
+    if (!std::isfinite(config.baseline) || config.baseline <= 0 ||
+        cv::norm(config.baselineDirection - cv::Vec3d(1,0,0)) > 1e-12)
+        CV_Error(Error::StsBadArg, "Native compatibility stereo supports positive horizontal baseline only");
     config_ = config;
     if (paramsSet_) {
         computeProjectionMatrices();
@@ -50,11 +53,17 @@ TriangulatedPoint StereoTriangulator::triangulatePoint(
     result.pointLeft = left;
     result.pointRight = right;
     result.valid = false;
+    if (!paramsSet_) CV_Error(Error::StsBadArg, "Camera parameters not set");
+    vector<Point2d> rawLeft{{left.x,left.y}}, rawRight{{right.x,right.y}}, ul, ur;
+    const TermCriteria criteria(TermCriteria::COUNT | TermCriteria::EPS,50,1e-12);
+    undistortPoints(rawLeft, ul, cameraMatrix_, distCoeffs_, noArray(), cameraMatrix_, criteria);
+    undistortPoints(rawRight, ur, cameraMatrix_, distCoeffs_, noArray(), cameraMatrix_, criteria);
+    const auto l = ul[0], r = ur[0];
 
     // Compute disparity (only meaningful for horizontal baseline)
-    result.disparity = left.x - right.x;
+    result.disparity = l.x - r.x;
 
-    if (abs(result.disparity) < config_.minDisparity) {
+    if (result.disparity < config_.minDisparity || abs(l.y-r.y)/std::sqrt(2.0) > config_.maxEpipolarError) {
         return result; 
     }
 
@@ -63,12 +72,12 @@ TriangulatedPoint StereoTriangulator::triangulatePoint(
     Mat A(4, 4, CV_64F);
 
     // Row 0, 1: from left camera
-    A.row(0) = left.x * P1_.row(2) - P1_.row(0);
-    A.row(1) = left.y * P1_.row(2) - P1_.row(1);
+    Mat(l.x * P1_.row(2) - P1_.row(0)).copyTo(A.row(0));
+    Mat(l.y * P1_.row(2) - P1_.row(1)).copyTo(A.row(1));
 
     // Row 2, 3: from right camera
-    A.row(2) = right.x * P2_.row(2) - P2_.row(0);
-    A.row(3) = right.y * P2_.row(2) - P2_.row(1);
+    Mat(r.x * P2_.row(2) - P2_.row(0)).copyTo(A.row(2));
+    Mat(r.y * P2_.row(2) - P2_.row(1)).copyTo(A.row(3));
 
     // SVD to find null space
     Mat w, u, vt;
@@ -86,9 +95,15 @@ TriangulatedPoint StereoTriangulator::triangulatePoint(
     double Y3d = X.at<double>(1) / W;
     double Z3d = X.at<double>(2) / W;
 
-    if (Z3d <= 0) {
+    if (!std::isfinite(X3d) || !std::isfinite(Y3d) || !std::isfinite(Z3d) ||
+        Z3d < config_.minDepth || Z3d > config_.maxDepth) {
         return result; 
     }
+    Vec3d rayLeft((l.x-cx_)/fx_, (l.y-cy_)/fy_, 1);
+    Vec3d rayRight((r.x-cx_)/fx_, (r.y-cy_)/fy_, 1);
+    double cosine = rayLeft.dot(rayRight)/(cv::norm(rayLeft)*cv::norm(rayRight));
+    double angle = std::acos(std::max(-1.0,std::min(1.0,cosine)))*180.0/CV_PI;
+    if (angle < config_.minParallaxDegrees) return result;
 
     result.point3d = Vector3d(X3d, Y3d, Z3d);
     result.depth = Z3d;
@@ -110,7 +125,7 @@ TriangulatedPoint StereoTriangulator::triangulatePoint(
     result.reprojError = (errLeft + errRight) / 2.0;
 
     // Quality check
-    if (result.reprojError <= config_.maxReprojError) {
+    if (std::max(errLeft,errRight) <= config_.maxReprojError) {
         result.valid = true;
     }
 

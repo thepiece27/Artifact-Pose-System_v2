@@ -6,9 +6,9 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-artifact_auth}
       POSTGRES_USER: ${POSTGRES_USER:-artifact}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-artifact123}
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    expose:
+      - "5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -21,12 +21,23 @@ services:
     image: eclipse-mosquitto:2
     container_name: artifact_mosquitto
     restart: unless-stopped
-    ports:
-      - "1883:1883"
+    expose:
+      - "1883"
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h 127.0.0.1 -p 1883 -u \"$$MQTT_USERNAME\" -P \"$$MQTT_PASSWORD\" -t _healthcheck -m ok -q 0 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    environment:
+      MQTT_USERNAME: ${MQTT_USERNAME:?MQTT_USERNAME must be set}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?MQTT_PASSWORD must be set}
     volumes:
       - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
+    command: >
+      sh -c "mosquitto_passwd -b -c /mosquitto/data/passwordfile $$MQTT_USERNAME $$MQTT_PASSWORD
+      && exec mosquitto -c /mosquitto/config/mosquitto.conf"
 
   server:
     build:
@@ -38,13 +49,16 @@ services:
       postgres:
         condition: service_healthy
       mosquitto:
-        condition: service_started
+        condition: service_healthy
     environment:
       APP_NAME: ${APP_NAME:-IoT Artifact Server}
       APP_VERSION: ${APP_VERSION:-1.0.0}
       APP_HOST: 0.0.0.0
       APP_PORT: 8000
-      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-*}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:?CORS_ALLOW_ORIGINS must be set}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DEVICE_API_KEY: ${DEVICE_API_KEY:?DEVICE_API_KEY must be set}
+      DEVICE_ENROLLMENT_KEY: ${DEVICE_ENROLLMENT_KEY:?DEVICE_ENROLLMENT_KEY must be set}
       DATA_DIR: /app/data
       MODEL_DIR: /app/model
       RUN_POSE_ON_UPLOAD: ${RUN_POSE_ON_UPLOAD:-true}
@@ -52,17 +66,25 @@ services:
       AUTO_DISPATCH_POSE_COMMAND: ${AUTO_DISPATCH_POSE_COMMAND:-true}
       RUN_AI_ON_ALIGNED_IMAGE: ${RUN_AI_ON_ALIGNED_IMAGE:-true}
       DEFAULT_AI_MODEL_NAME: ${DEFAULT_AI_MODEL_NAME:-default}
-      DEFAULT_AI_MODEL_PATH: best_Quyen.pt
+      DEFAULT_AI_MODEL_PATH: ${DEFAULT_AI_MODEL_PATH:-}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-26214400}
+      MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-40000000}
+      MAX_METADATA_BYTES: ${MAX_METADATA_BYTES:-65536}
+      MAX_MOVE_STEPS: ${MAX_MOVE_STEPS:-100000}
+      MAX_MOVE_ANGLE_DEG: ${MAX_MOVE_ANGLE_DEG:-180}
+      MAX_MODEL_BYTES: ${MAX_MODEL_BYTES:-2147483648}
+      REQUIRE_MODEL_FOR_READINESS: ${REQUIRE_MODEL_FOR_READINESS:-true}
+      MQTT_PUBLISH_TIMEOUT_SEC: ${MQTT_PUBLISH_TIMEOUT_SEC:-5}
       # Hardcode postgres service hostname — do not use ${AUTH_DATABASE_URL} substitution
       # because server/.env (dung cho local) dung 127.0.0.1 se ghi de va lam mat ket noi.
-      AUTH_DATABASE_URL: postgresql+psycopg://artifact:${POSTGRES_PASSWORD:-artifact123}@postgres:5432/${POSTGRES_DB:-artifact_auth}
+      AUTH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?POSTGRES_USER must be set}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB must be set}
       # Hardcode MQTT broker container hostname — same reason as AUTH_DATABASE_URL:
       # server/.env (dung cho local) co MQTT_HOST=127.0.0.1 se ghi de gia tri nay.
       MQTT_HOST: mosquitto
       MQTT_PORT: 1883
       MQTT_KEEPALIVE_SEC: ${MQTT_KEEPALIVE_SEC:-60}
-      MQTT_USERNAME: ${MQTT_USERNAME:-}
-      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      MQTT_USERNAME: ${MQTT_USERNAME:?MQTT_USERNAME must be set}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?MQTT_PASSWORD must be set}
       MQTT_QOS: ${MQTT_QOS:-1}
       MQTT_CMD_TOPIC_TEMPLATE: ${MQTT_CMD_TOPIC_TEMPLATE:-cmd/{device_id}}
       MQTT_ACK_TOPIC_TEMPLATE: ${MQTT_ACK_TOPIC_TEMPLATE:-ack/{device_id}}
@@ -80,17 +102,22 @@ services:
       TRANS_TOLERANCE_MM: ${TRANS_TOLERANCE_MM:-25.0}
       ROT_TOLERANCE_DEG: ${ROT_TOLERANCE_DEG:-2.0}
       STEPS_PER_MM: ${STEPS_PER_MM:-800.0}
-      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-CHANGE_ME_AUTH_SECRET}
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?AUTH_SECRET_KEY must be set}
       AUTH_ALGORITHM: ${AUTH_ALGORITHM:-HS256}
       AUTH_ACCESS_TOKEN_EXPIRE_MINUTES: ${AUTH_ACCESS_TOKEN_EXPIRE_MINUTES:-60}
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     volumes:
       - ./data:/app/data
       - ../model:/app/model
     command: >
       sh -c "
-          PYTHONPATH=/app python tools/create_admin.py --username ${ADMIN_USERNAME:-admin} --password ${ADMIN_PASSWORD:-123456} --role admin &&
+          PYTHONPATH=/app python tools/create_admin.py --username ${ADMIN_USERNAME:?ADMIN_USERNAME must be set} --password ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set} --role admin &&
         uvicorn run:app --host 0.0.0.0 --port 8000
       "
 

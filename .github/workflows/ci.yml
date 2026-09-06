@@ -1,0 +1,29 @@
+name: artifact-pose-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m compileall -q app ../embed ../ai_module
+      - run: pytest -q
+
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose interpolation
+        working-directory: server
+        run: docker compose --env-file env.docker.example -f docker-compose.yml config --quiet

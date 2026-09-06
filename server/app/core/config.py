@@ -87,6 +87,20 @@ class Settings:
     app_host: str
     app_port: int
     cors_allow_origins: list[str]
+    environment: str
+    device_api_key: str
+    device_enrollment_key: str
+    max_upload_bytes: int
+    max_image_pixels: int
+    max_metadata_bytes: int
+    max_move_steps: int
+    max_move_angle_deg: float
+    trans_tolerance_mm: float
+    rot_tolerance_deg: float
+    steps_per_mm: float
+    allow_public_registration: bool
+    require_model_for_readiness: bool
+    max_model_bytes: int
 
     data_dir: Path
     model_dir: Path
@@ -100,6 +114,7 @@ class Settings:
     mqtt_username: str
     mqtt_password: str
     mqtt_qos: int
+    mqtt_publish_timeout_sec: float
     mqtt_cmd_topic_template: str
     mqtt_ack_topic_template: str
     mqtt_status_topic_template: str
@@ -149,6 +164,42 @@ def ensure_directories(settings: Settings) -> None:
     settings.model_dir.mkdir(parents=True, exist_ok=True)
 
 
+def validate_runtime_security(settings: Settings) -> None:
+    """Fail fast on unsafe production defaults instead of starting silently."""
+    if settings.environment != "production":
+        return
+    weak = {
+        "",
+        "change_me",
+        "change_me_auth_secret",
+        "change_me_long_auth_secret",
+        "change_me_long_device_api_key",
+        "change_me_long_enrollment_key",
+        "change_me_long_mqtt_password",
+        "123456",
+        "artifact123",
+    }
+    auth_secret = os.getenv("AUTH_SECRET_KEY", "").strip().lower()
+    admin_password = os.getenv("ADMIN_PASSWORD", "").strip().lower()
+    postgres_password = os.getenv("POSTGRES_PASSWORD", "").strip().lower()
+    if auth_secret in weak or len(auth_secret) < 32:
+        raise RuntimeError("AUTH_SECRET_KEY must be a unique secret of at least 32 characters in production")
+    if admin_password in weak or len(admin_password) < 12:
+        raise RuntimeError("ADMIN_PASSWORD must be at least 12 characters in production")
+    if postgres_password in weak or len(postgres_password) < 16:
+        raise RuntimeError("POSTGRES_PASSWORD must contain at least 16 characters in production")
+    if settings.device_api_key.strip().lower() in weak:
+        raise RuntimeError("DEVICE_API_KEY must be configured in production")
+    if settings.device_enrollment_key.strip().lower() in weak:
+        raise RuntimeError("DEVICE_ENROLLMENT_KEY must be configured in production")
+    if len(settings.mqtt_password) < 16:
+        raise RuntimeError("MQTT_PASSWORD must contain at least 16 characters in production")
+    if not settings.mqtt_username.strip():
+        raise RuntimeError("MQTT_USERNAME must be configured in production")
+    if settings.cors_allow_origins == ["*"]:
+        raise RuntimeError("CORS_ALLOW_ORIGINS must not be '*' in production")
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     artifact_pose_root_raw = _env_str(
@@ -193,6 +244,23 @@ def get_settings() -> Settings:
         app_host=_env_str("APP_HOST", "0.0.0.0"),
         app_port=_env_int("APP_PORT", 8000),
         cors_allow_origins=origins,
+        environment=_env_str("ENVIRONMENT", "development").lower(),
+        device_api_key=_env_str("DEVICE_API_KEY", ""),
+        device_enrollment_key=_env_str("DEVICE_ENROLLMENT_KEY", ""),
+        max_upload_bytes=max(1_048_576, _env_int("MAX_UPLOAD_BYTES", 25 * 1024 * 1024)),
+        max_image_pixels=max(1_000_000, _env_int("MAX_IMAGE_PIXELS", 40_000_000)),
+        max_metadata_bytes=max(1024, _env_int("MAX_METADATA_BYTES", 64 * 1024)),
+        max_move_steps=max(1, _env_int("MAX_MOVE_STEPS", 100_000)),
+        max_move_angle_deg=max(1.0, _env_float("MAX_MOVE_ANGLE_DEG", 180.0) or 180.0),
+        trans_tolerance_mm=max(0.1, _env_float("TRANS_TOLERANCE_MM", 25.0) or 25.0),
+        rot_tolerance_deg=max(0.01, _env_float("ROT_TOLERANCE_DEG", 2.0) or 2.0),
+        steps_per_mm=max(1.0, _env_float("STEPS_PER_MM", 800.0) or 800.0),
+        allow_public_registration=_env_bool(
+            "ALLOW_PUBLIC_REGISTRATION",
+            _env_str("ENVIRONMENT", "development").lower() != "production",
+        ),
+        require_model_for_readiness=_env_bool("REQUIRE_MODEL_FOR_READINESS", True),
+        max_model_bytes=max(1, _env_int("MAX_MODEL_BYTES", 2 * 1024 * 1024 * 1024)),
         data_dir=Path(data_dir_raw),
         model_dir=Path(model_dir_raw),
         run_pose_on_upload=_env_bool("RUN_POSE_ON_UPLOAD", True),
@@ -204,6 +272,7 @@ def get_settings() -> Settings:
         mqtt_username=_env_str("MQTT_USERNAME", ""),
         mqtt_password=_env_str("MQTT_PASSWORD", ""),
         mqtt_qos=max(0, min(2, _env_int("MQTT_QOS", 1))),
+        mqtt_publish_timeout_sec=max(1.0, _env_float("MQTT_PUBLISH_TIMEOUT_SEC", 5.0) or 5.0),
         mqtt_cmd_topic_template=_env_str("MQTT_CMD_TOPIC_TEMPLATE", "cmd/{device_id}"),
         mqtt_ack_topic_template=_env_str("MQTT_ACK_TOPIC_TEMPLATE", "ack/{device_id}"),
         mqtt_status_topic_template=_env_str(

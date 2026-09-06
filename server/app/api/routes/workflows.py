@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.dependencies import get_container, get_current_user
 from app.schemas.workflow import (
@@ -99,22 +99,22 @@ def _publish_or_queue(
     payload: dict[str, Any],
 ) -> TriggerCommandResponse:
     published, result = container.mqtt_bridge.publish_command(device_id, payload)
-    queued = 0
-    mode = "mqtt"
-
     if not published:
-        queued = container.command_service.queue_command(device_id, payload)
-        mode = "http_queue_fallback"
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"MQTT command delivery unavailable: {result}",
+            headers={"Retry-After": "3"},
+        )
 
     return TriggerCommandResponse(
         ok=True,
         device_id=device_id,
-        mode=mode,
+        mode="mqtt",
         published=published,
-        topic=result if published else None,
-        publish_error=None if published else result,
+        topic=result,
+        publish_error=None,
         task_id=str(payload["task_id"]),
-        queued=queued,
+        queued=0,
         payload=payload,
     )
 

@@ -6,9 +6,17 @@ from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
+# Load the same local configuration source before deriving JWT settings. This
+# module is imported by API dependencies before app.main calls get_settings().
+from app.core.config import SERVER_ROOT, _load_dotenv_file
+
+_load_dotenv_file(SERVER_ROOT / ".env")
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-SECRET_KEY = os.getenv("AUTH_SECRET_KEY", "CHANGE_ME_AUTH_SECRET")
+SECRET_KEY = os.getenv("AUTH_SECRET_KEY", "")
+if not SECRET_KEY:
+    raise RuntimeError("AUTH_SECRET_KEY must be configured before importing the API")
 ALGORITHM = os.getenv("AUTH_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("AUTH_ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 

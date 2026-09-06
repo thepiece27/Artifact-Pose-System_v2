@@ -7,6 +7,7 @@ import '../../models/inspection.dart';
 import '../../services/api_config.dart';
 import '../../theme.dart';
 import '../../widgets/status_badge.dart';
+import '../../widgets/authenticated_image.dart';
 
 const _clsLabel = {
   'material_loss': 'Material Loss',
@@ -781,7 +782,7 @@ class _BboxRegionImageState extends State<_BboxRegionImage> {
                 top: top,
                 width: imageWidth * scale,
                 height: imageHeight * scale,
-                child: Image.network(
+                child: AuthenticatedImage(
                   widget.imageUrl,
                   fit: BoxFit.fill,
                   errorBuilder: (_, __, ___) => _bboxPlaceholder(),
@@ -993,7 +994,7 @@ class _MiniImageTile extends StatelessWidget {
                         fullscreenDialog: true,
                       ),
                     ),
-                    child: Image.network(
+                    child: AuthenticatedImage(
                       url!,
                       fit: BoxFit.cover,
                       loadingBuilder: (_, child, progress) => progress == null
@@ -1044,7 +1045,7 @@ class _ZoomableNetworkImage extends StatelessWidget {
           fullscreenDialog: true,
         ),
       ),
-      child: Image.network(
+      child: AuthenticatedImage(
         url,
         fit: BoxFit.contain,
         width: double.infinity,
@@ -1086,7 +1087,7 @@ class _FullScreenImagePage extends StatelessWidget {
         child: InteractiveViewer(
           minScale: 0.5,
           maxScale: 8.0,
-          child: Image.network(
+          child: AuthenticatedImage(
             url,
             fit: BoxFit.contain,
             loadingBuilder: (_, child, progress) => progress == null

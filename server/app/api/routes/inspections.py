@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from app.api.dependencies import get_container
+from app.api.dependencies import get_container, require_device_access
 from app.schemas.inspection import InspectionUploadResponse
 from app.services.state import AppContainer
 
@@ -14,6 +14,7 @@ async def upload_inspection(
     file: UploadFile = File(...),
     metadata: str = Form(...),
     container: AppContainer = Depends(get_container),
+    _auth=Depends(require_device_access),
 ) -> InspectionUploadResponse:
     try:
         result = await container.inspection_service.handle_upload(file, metadata)

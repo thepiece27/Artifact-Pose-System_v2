@@ -36,7 +36,9 @@ def _to_url(path_str: str | None) -> str | None:
         rel = full.relative_to(uploads_dir).as_posix()
         return f"/uploads/{rel}"
     except (ValueError, OSError):
-        return f"/uploads/{path_str}" if not path_str.startswith("http") else path_str
+        # Never expose arbitrary filesystem paths as a media URL. Stored paths
+        # must resolve under the private uploads root.
+        return path_str if path_str.startswith("http") else None
 
 
 def _serialize(artifact: Artifact) -> ArtifactRead:
@@ -149,6 +151,11 @@ def inspect_artifact_from_device(
         )
 
     image_path = Path(full_path_str)
+    try:
+        image_path = image_path.resolve()
+        image_path.relative_to(container.settings.uploads_dir.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Capture path is outside private media storage") from exc
     if not image_path.exists():
         raise HTTPException(
             status_code=404,

@@ -7,7 +7,10 @@
 #include <g2o/core/robust_kernel_impl.h>
 #include <g2o/types/sba/types_six_dof_expmap.h>
 #include <g2o/types/sba/edge_project_xyz.h>
-#include <g2o/solvers/pcg/linear_solver_pcg.h>
+#include <g2o/solvers/dense/linear_solver_dense.h>
+#include <limits>
+#include <stdexcept>
+#include <cmath>
 
 using namespace cv;
 using namespace std;
@@ -15,9 +18,12 @@ using namespace Eigen;
 using namespace g2o;
 
 HybridPoseSolver::HybridPoseSolver()
-    : paramsSet_(false), fx_(0), fy_(0), cx_(0), cy_(0) {}
+    : fx_(0), fy_(0), cx_(0), cy_(0), paramsSet_(false) {}
 
 void HybridPoseSolver::setCameraParams(const Mat& cameraMatrix, const Mat& distCoeffs) {
+    if (cameraMatrix.type()!=CV_64F || cameraMatrix.rows!=3 || cameraMatrix.cols!=3 ||
+        !cv::checkRange(cameraMatrix) || !cv::checkRange(distCoeffs))
+        throw std::invalid_argument("Invalid camera parameters");
     cameraMatrix_ = cameraMatrix.clone();
     distCoeffs_ = distCoeffs.clone();
 
@@ -30,24 +36,42 @@ void HybridPoseSolver::setCameraParams(const Mat& cameraMatrix, const Mat& distC
 }
 
 void HybridPoseSolver::setConfig(const HybridConfig& config) {
+    if (!std::isfinite(config.diamondWeight) || config.diamondWeight<=0 ||
+        !std::isfinite(config.orbWeight) || config.orbWeight<=0 ||
+        !std::isfinite(config.huberDelta) || config.huberDelta<=0 || config.maxIterations<=0)
+        throw std::invalid_argument("Invalid optimizer configuration");
     config_ = config;
 }
 
 HybridPoseResult HybridPoseSolver::optimize(
     const Vec3d& initialRvec,
     const Vec3d& initialTvec,
-    const vector<DiamondObservation>& diamondObs,
-    const vector<ORBObservation>& orbObs
+    const vector<DiamondObservation>& diamondInput,
+    const vector<ORBObservation>& orbInput
 ) {
     HybridPoseResult result;
 
     if (!paramsSet_) {
-        return result;
+        throw std::invalid_argument("Camera parameters not set");
     }
+    auto diamondObs = diamondInput;
+    auto orbObs = orbInput;
+    // Native v2 receives distorted pixels. EdgeSE3ProjectXYZ is pinhole-only.
+    auto undistortObservations = [&](auto& observations) {
+        if (observations.empty()) return;
+        vector<Point2d> raw, corrected;
+        for (const auto& obs : observations) raw.emplace_back(obs.point2d.x(), obs.point2d.y());
+        undistortPoints(raw, corrected, cameraMatrix_, distCoeffs_, noArray(), cameraMatrix_,
+                        TermCriteria(TermCriteria::COUNT | TermCriteria::EPS, 50, 1e-12));
+        for (size_t i=0; i<observations.size(); ++i)
+            observations[i].point2d = Vector2d(corrected[i].x, corrected[i].y);
+    };
+    undistortObservations(diamondObs);
+    undistortObservations(orbObs);
 
     // Setup G2O Optimizer
     typedef BlockSolver<BlockSolverTraits<6, 3>> BlockSolverType;
-    typedef LinearSolverPCG<BlockSolverType::PoseMatrixType> LinearSolverType;
+    typedef LinearSolverDense<BlockSolverType::PoseMatrixType> LinearSolverType;
 
     auto solver = new OptimizationAlgorithmLevenberg(
         std::make_unique<BlockSolverType>(
@@ -72,6 +96,17 @@ HybridPoseResult HybridPoseSolver::optimize(
 
     Vector3d t_eigen(initialTvec[0], initialTvec[1], initialTvec[2]);
     SE3Quat pose_se3(R_eigen, t_eigen);
+    if (diamondObs.size()!=4) throw std::invalid_argument("Expected four Diamond observations");
+    const Vector3d a=diamondObs[1].point3d-diamondObs[0].point3d;
+    const Vector3d b=diamondObs[2].point3d-diamondObs[0].point3d;
+    if (a.cross(b).norm()<1e-12) throw std::invalid_argument("Degenerate Diamond geometry");
+    auto validateDepth = [&](const auto& observations) {
+        for (const auto& obs : observations)
+            if (!obs.point3d.allFinite() || !obs.point2d.allFinite() ||
+                pose_se3.map(obs.point3d).z()<=1e-6)
+                throw std::invalid_argument("Nonfinite observation or nonpositive initial depth");
+    };
+    validateDepth(diamondObs); validateDepth(orbObs);
 
     VertexSE3Expmap* vPose = new VertexSE3Expmap();
     vPose->setId(0);
@@ -81,7 +116,7 @@ HybridPoseResult HybridPoseSolver::optimize(
     int vertexId = 1;
 
     // Add Diamond Marker Edges HIGH WEIGHT
-    // Information matrix = identity * diamondWeight (10^4)
+    // Information is an explicit inverse pixel-variance tuning parameter.
     for (const auto& obs : diamondObs) {
         // Fixed 3D point vertex
         VertexPointXYZ* vPoint = new VertexPointXYZ();
@@ -152,9 +187,12 @@ HybridPoseResult HybridPoseSolver::optimize(
     optimizer.initializeOptimization();
     optimizer.computeActiveErrors();
     result.initialChi2 = optimizer.activeChi2();
+    result.initialRobustCost = optimizer.activeRobustChi2();
 
     result.iterations = optimizer.optimize(config_.maxIterations);
+    optimizer.computeActiveErrors();  // Recompute after any rejected/rolled-back LM step.
     result.finalChi2 = optimizer.activeChi2();
+    result.finalRobustCost = optimizer.activeRobustChi2();
 
     // Extract Optimized Pose
     SE3Quat optimized_se3 = vPose->estimate();
@@ -173,7 +211,6 @@ HybridPoseResult HybridPoseSolver::optimize(
     result.tvec = Vec3d(result.translation.x(), result.translation.y(), result.translation.z());
 
     // Count inliers/outliers based on Huber threshold
-    double sumDiamondError = 0.0;
     double sumOrbInlierError = 0.0;
 
     vector<Eigen::Vector3d> diamondPts3d;
@@ -191,7 +228,7 @@ HybridPoseResult HybridPoseSolver::optimize(
 
         if (sqrt(err) < config_.huberDelta) {
             result.numOrbInliers++;
-            sumOrbInlierError += sqrt(err);
+            sumOrbInlierError += sqrt(err / config_.orbWeight);
         } else {
             result.numOrbOutliers++;
         }
@@ -200,10 +237,31 @@ HybridPoseResult HybridPoseSolver::optimize(
     if (result.numOrbInliers > 0) {
         result.orbMeanError = sumOrbInlierError / result.numOrbInliers;
     } else {
-        result.orbMeanError = 0.0;
+        result.orbMeanError = std::numeric_limits<double>::quiet_NaN();
     }
 
-    result.converged = (result.iterations > 0);
+    // Iteration count is NOT a convergence certificate. Check local numerical
+    // stationarity of the actual robust objective under left SE(3) perturbations.
+    const SE3Quat finalPose = vPose->estimate();
+    const double cost = result.finalRobustCost;
+    double maximumScaledGradient = 0;
+    const double eps = 1e-6;
+    for (int j=0; j<6; ++j) {
+        Vector6 step = Vector6::Zero(); step[j] = eps;
+        vPose->setEstimate(SE3Quat::exp(step) * finalPose);
+        optimizer.computeActiveErrors(); double plus = optimizer.activeRobustChi2();
+        vPose->setEstimate(SE3Quat::exp(-step) * finalPose);
+        optimizer.computeActiveErrors(); double minus = optimizer.activeRobustChi2();
+        double gradient = (plus - minus) / (4 * eps);
+        double curvature = std::max(1.0, (plus + minus - 2 * cost) / (2 * eps * eps));
+        maximumScaledGradient = std::max(maximumScaledGradient, std::abs(gradient) / std::sqrt(curvature));
+        if (!std::isfinite(plus) || !std::isfinite(minus)) maximumScaledGradient = std::numeric_limits<double>::infinity();
+    }
+    vPose->setEstimate(finalPose);
+    optimizer.computeActiveErrors();
+    result.converged = std::isfinite(cost) && maximumScaledGradient < 1e-4 &&
+                       cost <= result.initialRobustCost + 1e-8 * std::max(1.0, result.initialRobustCost);
+    result.status = result.converged ? "numerically_stationary" : "not_stationary_or_cost_increased";
     return result;
 }
 
@@ -224,18 +282,18 @@ double HybridPoseSolver::computeReprojError(
 ) {
     if (points3d.empty()) return 0.0;
 
-    vector<Point3f> objPts;
+    vector<Point3d> objPts;
     for (const auto& p : points3d) {
-        objPts.push_back(Point3f(p.x(), p.y(), p.z()));
+        objPts.push_back(Point3d(p.x(), p.y(), p.z()));
     }
 
-    vector<Point2f> imgPts;
+    vector<Point2d> imgPts;
     for (const auto& p : points2d) {
-        imgPts.push_back(Point2f(p.x(), p.y()));
+        imgPts.push_back(Point2d(p.x(), p.y()));
     }
 
     // Project without distortion (observations are pre-undistorted)
-    vector<Point2f> projected;
+    vector<Point2d> projected;
     Mat zeroDist;
     projectPoints(objPts, rvec, tvec, cameraMatrix_, zeroDist, projected);
 

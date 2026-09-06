@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.api.dependencies import get_container, get_current_user, require_admin
+from app.core.uploads import validate_image_bytes
 from app.models.user import User
 from app.schemas.models import (
     ModelDetectResponse,
@@ -101,9 +102,15 @@ async def detect_image(
     container: AppContainer = Depends(get_container),
     _: User = Depends(get_current_user),
 ) -> ModelDetectResponse:
-    image_bytes = await file.read()
-    if not image_bytes:
-        raise HTTPException(status_code=400, detail="Empty image file")
+    image_bytes = await file.read(container.settings.max_upload_bytes + 1)
+    try:
+        validate_image_bytes(
+            image_bytes,
+            max_bytes=container.settings.max_upload_bytes,
+            max_pixels=container.settings.max_image_pixels,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         output = container.model_service.detect_image(name, image_bytes)
