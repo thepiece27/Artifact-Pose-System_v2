@@ -18,7 +18,6 @@ from app.schemas.devices import (
     DeviceStatusResponse,
     DeviceSummary,
     MoveCommand,
-    MoveCommandRequest,
     QueueMoveResponse,
 )
 from app.services.state import AppContainer
@@ -165,21 +164,6 @@ def queue_move(
         task_id=str(payload["task_id"]),
         queued=queued,
     )
-
-
-@router.post("/{device_code}/move", response_model=MoveCommand)
-def poll_move_command(
-    device_code: str,
-    req: MoveCommandRequest | None = None,
-    container: AppContainer = Depends(get_container),
-    _auth: User | None = Depends(require_device_access),
-) -> MoveCommand:
-    if not container.mqtt_bridge._valid_device_id(device_code):
-        raise HTTPException(status_code=400, detail="Invalid device code")
-    if req is not None and req.device_id != device_code:
-        raise HTTPException(status_code=400, detail="device_id mismatch")
-    payload = container.command_service.pop_next_command(device_code)
-    return MoveCommand(**payload)
 
 
 @router.get("/{device_code}/status", response_model=DeviceStatusResponse)

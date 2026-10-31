@@ -77,6 +77,8 @@ async def initialize_golden(
     temp_dir = container.settings.uploads_dir / "pose_init"
     left_path = await _save_temp_upload(temp_dir, left_file, container)
     right_path = await _save_temp_upload(temp_dir, right_file, container)
+    left_bytes = left_path.read_bytes()
+    left_filename = left_path.name
 
     try:
         result = container.pose_service.initialize_golden(
@@ -92,7 +94,7 @@ async def initialize_golden(
     # Auto-extract artifact_id from filename if Pi didn't send it as form field.
     # Pi saves files as: stereo_left_{artifact_id}_{ts_ns}.png
     if not artifact_id:
-        match = re.search(r"stereo_left_([a-f0-9]{6})_", left_path.name)
+        match = re.search(r"stereo_left_([a-f0-9]{6})_", left_filename)
         if match:
             artifact_id = match.group(1)
             logger.info("[initialize_golden] Auto-extracted artifact_id=%s from filename", artifact_id)
@@ -106,7 +108,7 @@ async def initialize_golden(
             golden_dir = container.settings.uploads_dir / "artifacts" / safe_artifact_id
             golden_dir.mkdir(parents=True, exist_ok=True)
             golden_left_path = golden_dir / f"golden_left_{safe_artifact_id}_{ts_ms}.png"
-            golden_left_path.write_bytes(left_path.read_bytes())
+            golden_left_path.write_bytes(left_bytes)
 
             baseline_image = Image(
                 artifact_id=artifact_id,

@@ -19,7 +19,7 @@ class InspectionRead(BaseModel):
     previous_image_path: str | None = None
     current_image_path: str | None = None
     heatmap_path: str | None = None
-    damage_score: int = Field(ge=0, le=100)
+    damage_score: float = Field(ge=0.0, le=100.0)
     ssim_score: str | None = None
     status: InspectionStatus
     inspection_type: InspectionType = "sudden"

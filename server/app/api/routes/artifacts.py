@@ -11,6 +11,7 @@ from app.api.dependencies import get_container, get_current_user
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.artifact import Artifact, Image, ImageComparison, Schedule, InspectionType
+from app.models.iot_device import IotDevice
 from app.schemas.artifact import ArtifactCreate, ArtifactRead, ArtifactUpdate
 from app.schemas.inspection_record import InspectionListResponse, InspectionRead
 from app.services.state import AppContainer
@@ -67,7 +68,7 @@ def _serialize_comparison(record: ImageComparison) -> InspectionRead:
         previous_image_path=_to_url(prev_path),
         current_image_path=_to_url(curr_path),
         heatmap_path=_to_url(record.heatmap_path),
-        damage_score=int(record.damage_score),
+        damage_score=round(float(record.damage_score), 2),
         ssim_score=record.ssim_score,
         status=record.status.value,
         inspection_type=record.inspection_type.value,
@@ -162,6 +163,13 @@ def inspect_artifact_from_device(
             detail=f"Image file not found on server: {image_path.name}",
         )
 
+    device = (
+        db.query(IotDevice)
+        .filter((IotDevice.device_id == device_id) | (IotDevice.device_code == device_id))
+        .first()
+    )
+    resolved_device_id = device.device_id if device else None
+
     try:
         image_bytes = image_path.read_bytes()
         record = container.inspection_service.run_artifact_inspection(
@@ -170,6 +178,7 @@ def inspect_artifact_from_device(
             image_bytes=image_bytes,
             original_filename=image_path.name,
             description=description or f"Device workflow: {device_id}",
+            device_id=resolved_device_id,
             inspection_type=InspectionType.sudden,
             created_by=created_by or None,
         )

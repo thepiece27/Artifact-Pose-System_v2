@@ -18,10 +18,6 @@ class DeviceIdResponse(BaseModel):
     machine_hash: str
 
 
-class MoveCommandRequest(BaseModel):
-    device_id: str
-
-
 class MoveCommand(BaseModel):
     action: str
     task_id: str | None = None

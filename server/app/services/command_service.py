@@ -12,7 +12,6 @@ from typing import Any
 
 class CommandService:
     def __init__(self, ack_history_limit: int = 200, state_file: Path | None = None) -> None:
-        self._queue_by_device: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._status_by_device: dict[str, dict[str, Any]] = {}
         self._ack_history_by_device: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._latest_capture_metadata_by_device: dict[str, dict[str, Any]] = {}
@@ -26,8 +25,6 @@ class CommandService:
             return
         try:
             data = json.loads(self._state_file.read_text(encoding="utf-8"))
-            if isinstance(data.get("queue"), dict):
-                self._queue_by_device.update({str(k): list(v) for k, v in data["queue"].items() if isinstance(v, list)})
             if isinstance(data.get("status"), dict):
                 self._status_by_device.update(data["status"])
             if isinstance(data.get("acks"), dict):
@@ -44,7 +41,6 @@ class CommandService:
         if self._state_file is None:
             return
         payload = {
-            "queue": dict(self._queue_by_device),
             "status": self._status_by_device,
             "acks": dict(self._ack_history_by_device),
             "latest_capture": self._latest_capture_metadata_by_device,
@@ -60,29 +56,6 @@ class CommandService:
     @staticmethod
     def build_task_id() -> str:
         return f"task-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
-
-    def queue_command(self, device_id: str, command: dict[str, Any]) -> int:
-        with self._lock:
-            queue = self._queue_by_device.setdefault(device_id, [])
-            queue.append(copy.deepcopy(command))
-            self._persist_locked()
-            return len(queue)
-
-    def pop_next_command(self, device_id: str) -> dict[str, Any]:
-        with self._lock:
-            queue = self._queue_by_device.setdefault(device_id, [])
-            if queue:
-                value = queue.pop(0)
-                self._persist_locked()
-                return value
-
-        return {
-            "action": "noop",
-            "task_id": None,
-            "direction": "none",
-            "angle": 0.0,
-            "step": 0,
-        }
 
     def record_status(self, device_id: str, topic: str, payload: Any) -> None:
         with self._lock:

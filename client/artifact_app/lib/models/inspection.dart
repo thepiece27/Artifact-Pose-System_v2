@@ -20,7 +20,7 @@ class Inspection {
   final String? previousImagePath;
   final String currentImagePath;
   final String? heatmapPath;
-  final int damageScore;
+  final double damageScore;
   final String? ssimScore;
   final ArtifactStatus status;
   final InspectionType inspectionType;
@@ -54,7 +54,7 @@ class Inspection {
       previousImagePath: json['previous_image_path'] as String?,
       currentImagePath: json['current_image_path'] as String? ?? '',
       heatmapPath: json['heatmap_path'] as String?,
-      damageScore: (json['damage_score'] as num?)?.toInt() ?? 0,
+      damageScore: (json['damage_score'] as num?)?.toDouble() ?? 0.0,
       ssimScore: json['ssim_score'] as String?,
       status: ArtifactStatus.fromWire(json['status'] as String?),
       inspectionType: InspectionType.fromWire(json['inspection_type'] as String?),

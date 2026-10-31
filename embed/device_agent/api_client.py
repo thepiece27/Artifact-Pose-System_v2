@@ -42,31 +42,6 @@ class APIClient:
 	def _enrollment_headers(self) -> Dict[str, str]:
 		return {"X-Enrollment-Key": self.config.device_enrollment_key} if self.config.device_enrollment_key else {}
 
-	def receive_move_command(self) -> Optional[Dict[str, Any]]:
-		"""Nhan lenh dieu khien tu endpoint POST /devices/{id}/move.
-
-		Ghi chu:
-		- O day IoT node dong vai tro client, chu dong goi API de nhan lenh.
-		- Server du kien tra ve JSON chua action, direction, angle/step.
-		"""
-		endpoint = f"/api/v1/devices/{self.config.device_id}/move"
-
-		try:
-			response = requests.post(
-				self._url(endpoint),
-				json={"device_id": self.config.device_id},
-				headers=self._device_headers(),
-				timeout=self.config.timeout_sec,
-			)
-			response.raise_for_status()
-			payload = response.json()
-			if not isinstance(payload, dict):
-				return None
-			return payload
-		except (RequestException, ValueError) as exc:
-			print(f"[API] Loi nhan lenh move: {exc}")
-			return None
-
 	def get_device_id(
 		self,
 		machine_hash: str,

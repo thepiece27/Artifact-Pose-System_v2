@@ -16,8 +16,6 @@ from app.schemas.workflow import (
 from app.services.state import AppContainer
 
 FIXED_STEREO_BASELINE_MM = 100.0
-FIXED_STEPS_PER_MM = 800.0
-FIXED_STEREO_BASELINE_STEPS = int(round(FIXED_STEREO_BASELINE_MM * FIXED_STEPS_PER_MM))
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -177,13 +175,15 @@ def start_initialization(
     req: StartInitializationRequest,
     container: AppContainer = Depends(get_container),
 ) -> TriggerCommandResponse:
+    steps_per_mm = container.settings.steps_per_mm
+    baseline_steps = int(round(FIXED_STEREO_BASELINE_MM * steps_per_mm))
     payload: dict[str, Any] = {
         "action": "capture_stereo_pair",
         "task_id": container.command_service.build_task_id(),
         "artifact_id": req.artifact_id,
-        "baseline_steps": FIXED_STEREO_BASELINE_STEPS,
+        "baseline_steps": baseline_steps,
         "baseline_mm": FIXED_STEREO_BASELINE_MM,
-        "steps_per_mm": FIXED_STEPS_PER_MM,
+        "steps_per_mm": steps_per_mm,
         "baseline_locked": True,
         "workflow": {
             "request_type": "start_initialization",

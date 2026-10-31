@@ -133,6 +133,18 @@ def camera_deviation(r_current, t_current, r_golden, t_golden,
     correction = current @ camera_golden
     angle = rotation_angle(correction[:3, :3])
     distance = float(np.linalg.norm(delta_world))
+
+    R_corr = correction[:3, :3]
+    sy = float(np.hypot(R_corr[0, 0], R_corr[1, 0]))
+    if sy > 1e-6:
+        roll = float(np.rad2deg(np.arctan2(R_corr[2, 1], R_corr[2, 2])))
+        pitch = float(np.rad2deg(np.arctan2(-R_corr[2, 0], sy)))
+        yaw = float(np.rad2deg(np.arctan2(R_corr[1, 0], R_corr[0, 0])))
+    else:
+        roll = float(np.rad2deg(np.arctan2(-R_corr[1, 2], R_corr[1, 1])))
+        pitch = float(np.rad2deg(np.arctan2(-R_corr[2, 0], sy)))
+        yaw = 0.0
+
     return {
         "camera_position_current_world_m": camera_current[:3, 3],
         "camera_position_golden_world_m": camera_golden[:3, 3],
@@ -140,6 +152,9 @@ def camera_deviation(r_current, t_current, r_golden, t_golden,
         "translation_correction_world_m": -delta_world,
         "translation_magnitude": distance,
         "rotation_magnitude": angle,
+        "delta_pan": pitch,
+        "delta_tilt": roll,
+        "delta_roll": yaw,
         "rotation_vector_correction_camera_rad": Rotation.from_matrix(
             correction[:3, :3]).as_rotvec(),
         "T_current_camera_desired_camera": correction,

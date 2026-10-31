@@ -836,6 +836,7 @@ class InspectionService:
 
         self._command_service.record_latest_capture_metadata(device_id, capture_metadata)
 
+        ai_result: dict[str, Any] | None = None
         if self._settings.run_ai_on_upload:
             ai_result = self._run_detector_on_path(saved_path)
             capture_metadata["ai_status"] = ai_result.get("status")
@@ -852,7 +853,6 @@ class InspectionService:
             # retry captures or motor commands.
             capture_metadata["alignment_status"] = "disabled_pose_flag"
             auto_alignment_loop = False
-        ai_result: dict[str, Any] | None = None
 
         # ── Alignment iteration guard ────────────────────────────────────────
         # Each upload during an active alignment loop counts as one iteration.
@@ -974,12 +974,23 @@ class InspectionService:
                 # Phase 1 → Rotation only   (Pan, Tilt servos). Runs after steppers.
                 # Alternates: 0 → 1 → 0 → 1 … until both axes are within tolerance.
                 # Smart-skip: if current phase's axis is already converged, jump ahead.
-                motor_cmd = pose_result.get("motor_command")
-                if motor_cmd and motor_cmd.get("enabled", True) and device_id:
-                    raw_move_x = float(motor_cmd.get("move_x",     0))
-                    raw_move_z = float(motor_cmd.get("move_z",     0))
-                    raw_pan    = float(motor_cmd.get("rotate_pan",  0))
-                    raw_tilt   = float(motor_cmd.get("rotate_tilt", 0))
+                raw_move_x = float(deviation.get("delta_x", 0.0)) * 1000.0 * self._settings.steps_per_mm * self._settings.sign_move_x
+                raw_move_z = float(deviation.get("delta_z", 0.0)) * 1000.0 * self._settings.steps_per_mm * self._settings.sign_move_z
+                raw_pan    = float(deviation.get("delta_pan", 0.0)) * self._settings.sign_rotate_pan
+                raw_tilt   = float(deviation.get("delta_tilt", 0.0)) * self._settings.sign_rotate_tilt
+
+                motor_cmd = {
+                    "enabled": True,
+                    "move_x": raw_move_x,
+                    "move_z": raw_move_z,
+                    "rotate_pan": raw_pan,
+                    "rotate_tilt": raw_tilt,
+                }
+                if pose_result is not None:
+                    pose_result["motor_command"] = motor_cmd
+                deviation["motor_command"] = motor_cmd
+
+                if device_id:
 
                     within_trans = bool(deviation.get("within_trans_tolerance", False))
                     within_rot   = bool(deviation.get("within_rot_tolerance",   False))
