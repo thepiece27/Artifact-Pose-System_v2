@@ -1,0 +1,232 @@
+{
+ "captured_with": {
+  "numpy": "2.4.6",
+  "opencv": "4.14.0",
+  "platform": "Windows-10-10.0.26300-SP0",
+  "python": "3.11.9",
+  "skimage": "0.26.0"
+ },
+ "deviations": [
+  {
+   "delta_pan": 1.4,
+   "delta_tilt": -0.6,
+   "delta_x": 0.012,
+   "delta_z": -0.03,
+   "within_rot_tolerance": false,
+   "within_tolerance": false,
+   "within_trans_tolerance": false
+  },
+  {
+   "delta_pan": 2.6,
+   "delta_tilt": 0.9,
+   "delta_x": -0.004,
+   "delta_z": 0.008,
+   "within_rot_tolerance": false,
+   "within_tolerance": false,
+   "within_trans_tolerance": false
+  },
+  {
+   "delta_pan": -2.4,
+   "delta_tilt": 0.2,
+   "delta_x": 0.0011,
+   "delta_z": 0.0021,
+   "within_rot_tolerance": false,
+   "within_tolerance": false,
+   "within_trans_tolerance": true
+  },
+  {
+   "delta_pan": 0.3,
+   "delta_tilt": -0.1,
+   "delta_x": 0.031,
+   "delta_z": 0.0005,
+   "within_rot_tolerance": true,
+   "within_tolerance": false,
+   "within_trans_tolerance": false
+  },
+  {
+   "delta_pan": -3.333,
+   "delta_tilt": 2.75,
+   "delta_x": -0.0123456,
+   "delta_z": 0.0300004,
+   "within_rot_tolerance": false,
+   "within_tolerance": false,
+   "within_trans_tolerance": false
+  },
+  {
+   "delta_pan": 0.1,
+   "delta_tilt": 0.1,
+   "delta_x": 0.001,
+   "delta_z": 0.001,
+   "within_rot_tolerance": true,
+   "within_tolerance": true,
+   "within_trans_tolerance": true
+  }
+ ],
+ "steps": [
+  {
+   "commands": [
+    {
+     "action": "move",
+     "alignment_iteration": 1,
+     "alignment_phase": "translation",
+     "artifact_id": "fixture01",
+     "pitch_delta": 0.0,
+     "workflow": {
+      "auto_alignment_loop": true
+     },
+     "x_dir": -1,
+     "x_steps": 9600,
+     "yaw_delta": 0.0,
+     "z_dir": 1,
+     "z_steps": 24000
+    }
+   ],
+   "dispatch_phase": "translation",
+   "dispatch_status": "published",
+   "motor_command": {
+    "enabled": true,
+    "move_x": -9600.0,
+    "move_z": 24000.0,
+    "rotate_pan": -1.4,
+    "rotate_tilt": 0.6
+   }
+  },
+  {
+   "commands": [
+    {
+     "action": "move",
+     "alignment_iteration": 2,
+     "alignment_phase": "rotation",
+     "artifact_id": "fixture01",
+     "pitch_delta": -0.9,
+     "workflow": {
+      "auto_alignment_loop": true
+     },
+     "x_dir": 1,
+     "x_steps": 0,
+     "yaw_delta": -2.6,
+     "z_dir": 1,
+     "z_steps": 0
+    }
+   ],
+   "dispatch_phase": "rotation",
+   "dispatch_status": "published",
+   "motor_command": {
+    "enabled": true,
+    "move_x": 3200.0,
+    "move_z": -6400.0,
+    "rotate_pan": -2.6,
+    "rotate_tilt": -0.9
+   }
+  },
+  {
+   "commands": [
+    {
+     "action": "move",
+     "alignment_iteration": 3,
+     "alignment_phase": "rotation",
+     "artifact_id": "fixture01",
+     "pitch_delta": -0.2,
+     "workflow": {
+      "auto_alignment_loop": true
+     },
+     "x_dir": 1,
+     "x_steps": 0,
+     "yaw_delta": 2.4,
+     "z_dir": 1,
+     "z_steps": 0
+    }
+   ],
+   "dispatch_phase": "rotation",
+   "dispatch_status": "published",
+   "motor_command": {
+    "enabled": true,
+    "move_x": -880.0000000000001,
+    "move_z": -1680.0,
+    "rotate_pan": 2.4,
+    "rotate_tilt": -0.2
+   }
+  },
+  {
+   "commands": [
+    {
+     "action": "move",
+     "alignment_iteration": 4,
+     "alignment_phase": "translation",
+     "artifact_id": "fixture01",
+     "pitch_delta": 0.0,
+     "workflow": {
+      "auto_alignment_loop": true
+     },
+     "x_dir": -1,
+     "x_steps": 24800,
+     "yaw_delta": 0.0,
+     "z_dir": -1,
+     "z_steps": 400
+    }
+   ],
+   "dispatch_phase": "translation",
+   "dispatch_status": "published",
+   "motor_command": {
+    "enabled": true,
+    "move_x": -24800.0,
+    "move_z": -400.0,
+    "rotate_pan": -0.3,
+    "rotate_tilt": 0.1
+   }
+  },
+  {
+   "commands": [
+    {
+     "action": "move",
+     "alignment_iteration": 5,
+     "alignment_phase": "rotation",
+     "artifact_id": "fixture01",
+     "pitch_delta": -2.75,
+     "workflow": {
+      "auto_alignment_loop": true
+     },
+     "x_dir": 1,
+     "x_steps": 0,
+     "yaw_delta": 3.333,
+     "z_dir": 1,
+     "z_steps": 0
+    }
+   ],
+   "dispatch_phase": "rotation",
+   "dispatch_status": "published",
+   "motor_command": {
+    "enabled": true,
+    "move_x": 9876.48,
+    "move_z": -24000.32,
+    "rotate_pan": 3.333,
+    "rotate_tilt": -2.75
+   }
+  },
+  {
+   "commands": [
+    {
+     "action": "alignment_complete",
+     "artifact_id": "fixture01",
+     "deviation": {
+      "delta_pan": 0.1,
+      "delta_tilt": 0.1,
+      "delta_x": 0.001,
+      "delta_z": 0.001,
+      "within_rot_tolerance": true,
+      "within_tolerance": true,
+      "within_trans_tolerance": true
+     },
+     "device_id": "dev01",
+     "total_iterations": 6,
+     "workflow": {
+      "auto_alignment_loop": true
+     }
+    }
+   ],
+   "dispatch_phase": null,
+   "dispatch_status": "alignment_complete_published",
+   "motor_command": null
+  }
+ ]
+}

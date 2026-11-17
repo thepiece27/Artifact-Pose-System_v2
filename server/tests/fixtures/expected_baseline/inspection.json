@@ -1,0 +1,587 @@
+{
+ "captured_with": {
+  "numpy": "2.4.6",
+  "opencv": "4.14.0",
+  "platform": "Windows-10-10.0.26300-SP0",
+  "python": "3.11.9",
+  "skimage": "0.26.0"
+ },
+ "inspect_damaged": {
+  "aligned_image_path": "aligned_fixture01_0.jpg",
+  "alignment_quality": "sift_homography",
+  "all_detections": [
+   {
+    "bbox_xyxy": [
+     755,
+     167,
+     809,
+     221
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6928,
+    "from_crop": "tight",
+    "region_ssim": 0.439
+   },
+   {
+    "bbox_xyxy": [
+     756,
+     235,
+     810,
+     289
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6814,
+    "from_crop": "tight",
+    "region_ssim": 0.4235
+   },
+   {
+    "bbox_xyxy": [
+     823,
+     166,
+     877,
+     220
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6776,
+    "from_crop": "tight",
+    "region_ssim": 0.4305
+   },
+   {
+    "bbox_xyxy": [
+     167,
+     119,
+     226,
+     178
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6742,
+    "from_crop": "tight",
+    "region_ssim": 0.4134
+   },
+   {
+    "bbox_xyxy": [
+     822,
+     234,
+     877,
+     289
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6669,
+    "from_crop": "tight",
+    "region_ssim": 0.4137
+   },
+   {
+    "bbox_xyxy": [
+     789,
+     201,
+     843,
+     255
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6666,
+    "from_crop": "tight",
+    "region_ssim": 0.3989
+   },
+   {
+    "bbox_xyxy": [
+     857,
+     200,
+     911,
+     254
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6445,
+    "from_crop": "tight",
+    "region_ssim": 0.412
+   },
+   {
+    "bbox_xyxy": [
+     781,
+     262,
+     885,
+     366
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6402,
+    "from_crop": "tight",
+    "region_ssim": 0.711
+   },
+   {
+    "bbox_xyxy": [
+     788,
+     334,
+     844,
+     390
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6336,
+    "from_crop": "tight",
+    "region_ssim": 0.4207
+   },
+   {
+    "bbox_xyxy": [
+     213,
+     164,
+     272,
+     223
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6323,
+    "from_crop": "tight",
+    "region_ssim": 0.412
+   },
+   {
+    "bbox_xyxy": [
+     789,
+     133,
+     843,
+     187
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.627,
+    "from_crop": "tight",
+    "region_ssim": 0.4027
+   },
+   {
+    "bbox_xyxy": [
+     213,
+     73,
+     273,
+     133
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6146,
+    "from_crop": "tight",
+    "region_ssim": 0.4174
+   },
+   {
+    "bbox_xyxy": [
+     722,
+     269,
+     776,
+     323
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6142,
+    "from_crop": "tight",
+    "region_ssim": 0.4169
+   },
+   {
+    "bbox_xyxy": [
+     722,
+     201,
+     776,
+     255
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6134,
+    "from_crop": "tight",
+    "region_ssim": 0.4084
+   },
+   {
+    "bbox_xyxy": [
+     123,
+     165,
+     183,
+     225
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.6011,
+    "from_crop": "tight",
+    "region_ssim": 0.4111
+   },
+   {
+    "bbox_xyxy": [
+     854,
+     334,
+     909,
+     389
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.5938,
+    "from_crop": "tight",
+    "region_ssim": 0.3925
+   },
+   {
+    "bbox_xyxy": [
+     123,
+     73,
+     182,
+     132
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.5878,
+    "from_crop": "tight",
+    "region_ssim": 0.4281
+   },
+   {
+    "bbox_xyxy": [
+     856,
+     133,
+     910,
+     187
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.5845,
+    "from_crop": "tight",
+    "region_ssim": 0.4014
+   },
+   {
+    "bbox_xyxy": [
+     723,
+     334,
+     780,
+     391
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.5651,
+    "from_crop": "tight",
+    "region_ssim": 0.4856
+   },
+   {
+    "bbox_xyxy": [
+     721,
+     132,
+     776,
+     187
+    ],
+    "class_name": "mock_dark",
+    "confidence": 0.5566,
+    "from_crop": "tight",
+    "region_ssim": 0.4022
+   }
+  ],
+  "analysis_error": null,
+  "analysis_status": "ok",
+  "auto_description": "20 region(s) detected | SSIM 94.3%.",
+  "damage_pct": 4.08,
+  "detections_json": {
+   "aligned_path": "aligned_fixture01_0.jpg",
+   "alignment_quality": "sift_homography",
+   "all_detections": [
+    {
+     "bbox_xyxy": [
+      755,
+      167,
+      809,
+      221
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6928,
+     "from_crop": "tight",
+     "region_ssim": 0.439
+    },
+    {
+     "bbox_xyxy": [
+      756,
+      235,
+      810,
+      289
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6814,
+     "from_crop": "tight",
+     "region_ssim": 0.4235
+    },
+    {
+     "bbox_xyxy": [
+      823,
+      166,
+      877,
+      220
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6776,
+     "from_crop": "tight",
+     "region_ssim": 0.4305
+    },
+    {
+     "bbox_xyxy": [
+      167,
+      119,
+      226,
+      178
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6742,
+     "from_crop": "tight",
+     "region_ssim": 0.4134
+    },
+    {
+     "bbox_xyxy": [
+      822,
+      234,
+      877,
+      289
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6669,
+     "from_crop": "tight",
+     "region_ssim": 0.4137
+    },
+    {
+     "bbox_xyxy": [
+      789,
+      201,
+      843,
+      255
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6666,
+     "from_crop": "tight",
+     "region_ssim": 0.3989
+    },
+    {
+     "bbox_xyxy": [
+      857,
+      200,
+      911,
+      254
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6445,
+     "from_crop": "tight",
+     "region_ssim": 0.412
+    },
+    {
+     "bbox_xyxy": [
+      781,
+      262,
+      885,
+      366
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6402,
+     "from_crop": "tight",
+     "region_ssim": 0.711
+    },
+    {
+     "bbox_xyxy": [
+      788,
+      334,
+      844,
+      390
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6336,
+     "from_crop": "tight",
+     "region_ssim": 0.4207
+    },
+    {
+     "bbox_xyxy": [
+      213,
+      164,
+      272,
+      223
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6323,
+     "from_crop": "tight",
+     "region_ssim": 0.412
+    },
+    {
+     "bbox_xyxy": [
+      789,
+      133,
+      843,
+      187
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.627,
+     "from_crop": "tight",
+     "region_ssim": 0.4027
+    },
+    {
+     "bbox_xyxy": [
+      213,
+      73,
+      273,
+      133
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6146,
+     "from_crop": "tight",
+     "region_ssim": 0.4174
+    },
+    {
+     "bbox_xyxy": [
+      722,
+      269,
+      776,
+      323
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6142,
+     "from_crop": "tight",
+     "region_ssim": 0.4169
+    },
+    {
+     "bbox_xyxy": [
+      722,
+      201,
+      776,
+      255
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6134,
+     "from_crop": "tight",
+     "region_ssim": 0.4084
+    },
+    {
+     "bbox_xyxy": [
+      123,
+      165,
+      183,
+      225
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.6011,
+     "from_crop": "tight",
+     "region_ssim": 0.4111
+    },
+    {
+     "bbox_xyxy": [
+      854,
+      334,
+      909,
+      389
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.5938,
+     "from_crop": "tight",
+     "region_ssim": 0.3925
+    },
+    {
+     "bbox_xyxy": [
+      123,
+      73,
+      182,
+      132
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.5878,
+     "from_crop": "tight",
+     "region_ssim": 0.4281
+    },
+    {
+     "bbox_xyxy": [
+      856,
+      133,
+      910,
+      187
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.5845,
+     "from_crop": "tight",
+     "region_ssim": 0.4014
+    },
+    {
+     "bbox_xyxy": [
+      723,
+      334,
+      780,
+      391
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.5651,
+     "from_crop": "tight",
+     "region_ssim": 0.4856
+    },
+    {
+     "bbox_xyxy": [
+      721,
+      132,
+      776,
+      187
+     ],
+     "class_name": "mock_dark",
+     "confidence": 0.5566,
+     "from_crop": "tight",
+     "region_ssim": 0.4022
+    }
+   ],
+   "analysis_error": null,
+   "analysis_status": "ok",
+   "annotated_path": "detect_fixture01_0.jpg",
+   "image_size": [
+    960,
+    540
+   ],
+   "sift_inliers": 889,
+   "ssim_summary": {
+    "damage_pct": 4.08,
+    "ssim": 0.9428896212707145,
+    "ssim_color": 0.9381734472478716,
+    "ssim_gray": 0.9460337372859433
+   },
+   "valid_mask_ratio": 0.97434
+  },
+  "heatmap_path": "heatmap_fixture01_0.jpg",
+  "sift_inliers": 889,
+  "ssim": 0.9428896212707145,
+  "ssim_color": 0.9381734472478716,
+  "ssim_gray": 0.9460337372859433,
+  "valid_mask_ratio": 0.97434
+ },
+ "inspect_unchanged": {
+  "aligned_image_path": "aligned_fixture01_0.jpg",
+  "alignment_quality": "sift_homography",
+  "all_detections": [
+   {
+    "bbox_xyxy": [
+     240,
+     135,
+     480,
+     270
+    ],
+    "class_name": "mock_full",
+    "confidence": 0.441,
+    "from_crop": "full",
+    "region_ssim": 0.982
+   }
+  ],
+  "analysis_error": null,
+  "analysis_status": "ok",
+  "auto_description": "1 region(s) detected | SSIM 95.9%.",
+  "damage_pct": 0.0,
+  "detections_json": {
+   "aligned_path": "aligned_fixture01_0.jpg",
+   "alignment_quality": "sift_homography",
+   "all_detections": [
+    {
+     "bbox_xyxy": [
+      240,
+      135,
+      480,
+      270
+     ],
+     "class_name": "mock_full",
+     "confidence": 0.441,
+     "from_crop": "full",
+     "region_ssim": 0.982
+    }
+   ],
+   "analysis_error": null,
+   "analysis_status": "ok",
+   "annotated_path": "detect_fixture01_0.jpg",
+   "image_size": [
+    960,
+    540
+   ],
+   "sift_inliers": 855,
+   "ssim_summary": {
+    "damage_pct": 0.0,
+    "ssim": 0.9587652572044619,
+    "ssim_color": 0.954561199846396,
+    "ssim_gray": 0.9615679621098392
+   },
+   "valid_mask_ratio": 0.946294
+  },
+  "heatmap_path": "heatmap_fixture01_0.jpg",
+  "sift_inliers": 855,
+  "ssim": 0.9587652572044619,
+  "ssim_color": 0.954561199846396,
+  "ssim_gray": 0.9615679621098392,
+  "valid_mask_ratio": 0.946294
+ }
+}

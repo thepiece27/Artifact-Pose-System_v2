@@ -1,2 +1,3 @@
 -r requirements.txt
 pytest>=8.0,<9
+scikit-image>=0.22.0

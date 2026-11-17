@@ -148,3 +148,8 @@ prompt*.md
 
 # Local model directory mounted into Docker
 model/
+
+# CITA experiment outputs (logs, replay results, generated sessions)
+server/logs/
+server/results/
+server/data/control/
