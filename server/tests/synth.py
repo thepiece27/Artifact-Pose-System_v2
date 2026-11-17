@@ -183,11 +183,22 @@ class SynthScene:
 
     # -- rendering -------------------------------------------------------------
     def render(self, T_cw, *, noise_sigma: float = 0.0, gain: float = 1.0, offset: float = 0.0,
-               rng: np.random.Generator | None = None, texture: np.ndarray | None = None) -> np.ndarray:
+               rng: np.random.Generator | None = None, texture: np.ndarray | None = None,
+               supersample: int = 1) -> np.ndarray:
+        """``supersample`` > 1 renders at s x resolution and area-averages
+        (models pixel integration, removes aliasing). Fixtures use 1."""
         tex = self.texture if texture is None else texture
+        s = int(supersample)
         H = self.homography(T_cw)
-        img = cv2.warpPerspective(tex, H, self.image_size, flags=cv2.INTER_LINEAR,
-                                  borderMode=cv2.BORDER_CONSTANT, borderValue=(40, 40, 40))
+        if s > 1:
+            S = np.array([[s, 0, (s - 1) / 2.0], [0, s, (s - 1) / 2.0], [0, 0, 1.0]])
+            big = cv2.warpPerspective(tex, S @ H, (self.image_size[0] * s, self.image_size[1] * s),
+                                      flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
+                                      borderValue=(40, 40, 40))
+            img = cv2.resize(big, self.image_size, interpolation=cv2.INTER_AREA)
+        else:
+            img = cv2.warpPerspective(tex, H, self.image_size, flags=cv2.INTER_LINEAR,
+                                      borderMode=cv2.BORDER_CONSTANT, borderValue=(40, 40, 40))
         if gain != 1.0 or offset != 0.0 or noise_sigma > 0:
             f = img.astype(np.float32) * gain + offset
             if noise_sigma > 0:
@@ -311,7 +322,8 @@ def write_calibration(path: Path, scene: SynthScene) -> Path:
 
 def make_pose_session(root: Path, *, seed: int = 0, session_id: str = "E1_SYNTH",
                       offsets: list[dict] | None = None, frames_per_pose: int = 3,
-                      noise_sigma: float = 1.0, width: int = 960, painting_id: str = "SYN001") -> Path:
+                      noise_sigma: float = 1.0, width: int = 960, painting_id: str = "SYN001",
+                      supersample: int = 3) -> Path:
     """E1-style session: golden + stereo right + a grid of perturbed views.
 
     Ground truth of every frame is written to ``truth.json`` next to the
@@ -328,7 +340,7 @@ def make_pose_session(root: Path, *, seed: int = 0, session_id: str = "E1_SYNTH"
     frames, truth = [], {}
 
     def add(frame_id, T_cw, meta):
-        img = scene.render(T_cw, noise_sigma=noise_sigma, rng=rng)
+        img = scene.render(T_cw, noise_sigma=noise_sigma, rng=rng, supersample=supersample)
         f = out / f"{frame_id}.png"
         cv2.imwrite(str(f), img)
         frames.append({"frame_id": frame_id, "file": f.name, "sha256": _sha256(f), **meta})
@@ -376,7 +388,7 @@ DEFAULT_DAMAGES = [
 
 def make_change_pairs(root: Path, *, seed: int = 0, split: str = "test", n_unchanged: int = 3,
                       n_changed: int = 3, session_id: str | None = None, width: int = 960,
-                      damages: list[Damage] | None = None) -> Path:
+                      damages: list[Damage] | None = None, supersample: int = 3) -> Path:
     """E3-style pairs (golden vs current) with GT boxes in golden image coords."""
     scene = make_scene(seed, width=width)
     rng = np.random.default_rng(seed + 7)
@@ -385,7 +397,7 @@ def make_change_pairs(root: Path, *, seed: int = 0, split: str = "test", n_uncha
     out.mkdir(parents=True, exist_ok=True)
     calib = write_calibration(out / "calibration.yaml", scene)
     T_g = scene.T_gw()
-    golden = scene.render(T_g, noise_sigma=1.0, rng=rng)
+    golden = scene.render(T_g, noise_sigma=1.0, rng=rng, supersample=supersample)
     cv2.imwrite(str(out / "golden.png"), golden)
     damages = damages if damages is not None else DEFAULT_DAMAGES
     pairs = []
@@ -397,7 +409,7 @@ def make_change_pairs(root: Path, *, seed: int = 0, split: str = "test", n_uncha
         T_c = scene.pose_from_motion(off, rot)
         tex = scene.damaged_texture(damages) if changed else None
         img = scene.render(T_c, noise_sigma=1.5, gain=float(rng.uniform(0.92, 1.08)),
-                           offset=float(rng.uniform(-6, 6)), rng=rng, texture=tex)
+                           offset=float(rng.uniform(-6, 6)), rng=rng, texture=tex, supersample=supersample)
         name = f"cur_{i:03d}.png"
         cv2.imwrite(str(out / name), img)
         pair_id = f"{session_id}_{i:03d}"
