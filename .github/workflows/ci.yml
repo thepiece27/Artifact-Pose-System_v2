@@ -18,7 +18,9 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements-dev.txt
       - run: python -m compileall -q app ../embed ../ai_module
-      - run: pytest -q
+      - run: pytest -q --ignore=tests/cita
+      - name: CITA experiment tests
+        run: pytest tests/cita -q
 
   compose-config:
     runs-on: ubuntu-latest
