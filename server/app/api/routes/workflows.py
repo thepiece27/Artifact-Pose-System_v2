@@ -163,8 +163,12 @@ def start_alignment(
             "request_type": "start_alignment",
             "capture_job": "alignment",
             "auto_alignment_loop": True,
+            **({"cita_arm": req.cita_arm} if req.cita_arm else {}),
+            **({"cita_trial_id": req.cita_trial_id} if req.cita_trial_id else {}),
         },
     )
+    if req.keep_pose is not None:
+        payload["keep_pose"] = bool(req.keep_pose)
     container.inspection_service.reset_alignment_counter(device_id, req.artifact_id)
     return _publish_or_queue(container, device_id, payload)
 

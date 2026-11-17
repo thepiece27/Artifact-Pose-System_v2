@@ -20,6 +20,8 @@ from app.services.command_service import CommandService
 from app.services.model_service import ModelService
 from app.services.mqtt_bridge import MqttBridge
 from app.services.pose_service import PoseService
+from app.modules.change_detection import legacy as legacy_inspection
+from app.modules.change_detection.legacy import analyze_legacy
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,9 @@ class InspectionService:
             self._alignment_counters.update({str(k): int(v) for k, v in (payload.get("counters") or {}).items()})
             self._alignment_start_ts.update({str(k): float(v) for k, v in (payload.get("start_ts") or {}).items()})
             self._alignment_phase.update({str(k): int(v) for k, v in (payload.get("phase") or {}).items()})
+            cita = payload.get("cita")
+            if isinstance(cita, dict):
+                self._cita_sessions.update({str(k): v for k, v in cita.items() if isinstance(v, dict)})
         except Exception:
             return
 
@@ -72,7 +77,8 @@ class InspectionService:
                     "counters": self._alignment_counters,
                     "start_ts": self._alignment_start_ts,
                     "phase": self._alignment_phase,
-                }), encoding="utf-8")
+                    "cita": self._cita_sessions,
+                }, default=str), encoding="utf-8")
                 temp.replace(self._alignment_state_file)
             except Exception:
                 return
@@ -307,476 +313,34 @@ class InspectionService:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _analyze_against_reference(self, *, current_path: Path, reference_path: Path | None, artifact_id: str, ts_ms: int) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "ssim": None,
-            "ssim_gray": None,
-            "ssim_color": None,
-            "damage_pct": None,
-            "heatmap_path": None,
-            "auto_description": "Analysis performed.",
-            "detections_json": None,
-            "all_detections": [],
-            "analysis_status": "pending",
-            "analysis_error": None,
-            "alignment_quality": "not_run",
-            "sift_inliers": 0,
-            "valid_mask_ratio": None,
-        }
+        """Same signature and result keys as cita-baseline.
 
-        try:
-            import cv2
-            import numpy as np
-            current_img = cv2.imread(str(current_path))
-            if current_img is None:
-                result["analysis_status"] = "failed"
-                result["analysis_error"] = "current_image_decode_failed"
-                result["auto_description"] = "Error: Cannot read inspection image."
-                return result
-        except Exception as load_exc:
-            result["analysis_status"] = "failed"
-            result["analysis_error"] = f"image_load_error:{type(load_exc).__name__}"
-            result["auto_description"] = f"Image load error: {load_exc}"
-            return result
-
-        all_dets: list[dict] = []
-        aligned_img: Any = None
-        aligned_url: str | None = None
-        annotated = current_img.copy()
-
-        if reference_path is not None and reference_path.exists():
-            try:
-                import numpy as np
-                from skimage.metrics import structural_similarity
-                reference_img = cv2.imread(str(reference_path))
-                if reference_img is not None:
-                    h, w = reference_img.shape[:2]
-                    cur_resized = (
-                        cv2.resize(current_img, (w, h))
-                        if current_img.shape[:2] != (h, w)
-                        else current_img.copy()
-                    )
-
-                    # SIFT: used only for diff map.  YOLO runs on yolo_source (no warp artifacts).
-                    aligned_img, valid_mask, sift_inliers = self._sift_align_with_mask(cur_resized, reference_img)
-                    result["sift_inliers"] = int(sift_inliers)
-                    result["alignment_quality"] = (
-                        "sift_homography"
-                        if sift_inliers >= 15 and valid_mask is not None
-                        else "resize_fallback"
-                    )
-                    if valid_mask is not None:
-                        result["valid_mask_ratio"] = round(
-                            float(cv2.countNonZero(valid_mask)) / max(float(h * w), 1.0), 6
-                        )
-                    ssim_source = aligned_img if aligned_img is not None else cur_resized
-                    yolo_source = cur_resized
-
-                    # ── Multi-channel SSIM (gray 60% + color 40%) ──────────────────
-                    gray_src = cv2.cvtColor(ssim_source, cv2.COLOR_BGR2GRAY)
-                    gray_ref = cv2.cvtColor(reference_img, cv2.COLOR_BGR2GRAY)
-                    score_gray, diff_gray = structural_similarity(
-                        gray_ref, gray_src, full=True, win_size=7
-                    )
-                    score_channels: list[float] = []
-                    diff_color = np.zeros_like(gray_src, dtype=np.float64)
-                    for c in range(3):
-                        sc, dc = structural_similarity(
-                            reference_img[:, :, c], ssim_source[:, :, c], full=True, win_size=7
-                        )
-                        score_channels.append(sc)
-                        diff_color += (1.0 - dc)
-                    diff_color /= 3.0
-                    score_color  = float(np.mean(score_channels))
-                    diff_combined = np.maximum(1.0 - diff_gray, diff_color)
-                    diff_uint8    = (diff_combined * 255).astype(np.uint8)
-                    ssim_score    = 0.6 * float(score_gray) + 0.4 * score_color
-                    result["ssim"]       = ssim_score
-                    result["ssim_gray"]  = float(score_gray)
-                    result["ssim_color"] = score_color
-
-                    if valid_mask is not None:
-                        diff_uint8 = cv2.bitwise_and(diff_uint8, valid_mask)
-
-                    # ── Heatmap ────────────────────────────────────────────────────
-                    heatmap = cv2.applyColorMap(diff_uint8, cv2.COLORMAP_JET)
-                    if valid_mask is not None:
-                        heatmap[cv2.bitwise_not(valid_mask) > 0] = [128, 128, 128]
-                    heatmap_overlay = cv2.addWeighted(ssim_source, 0.6, heatmap, 0.4, 0)
-
-                    # ── Damage mask → contours ─────────────────────────────────────
-                    blurred = cv2.GaussianBlur(diff_uint8, (5, 5), 0)
-                    otsu_thresh, damage_mask = cv2.threshold(
-                        blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-                    )
-                    if otsu_thresh < 30:
-                        _, damage_mask = cv2.threshold(
-                            blurred, self._OTSU_FALLBACK, 255, cv2.THRESH_BINARY
-                        )
-                    kernel_s = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                    kernel_b = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-                    damage_mask = cv2.morphologyEx(damage_mask, cv2.MORPH_OPEN,  kernel_s, iterations=2)
-                    damage_mask = cv2.morphologyEx(damage_mask, cv2.MORPH_CLOSE, kernel_b, iterations=2)
-                    contours, _ = cv2.findContours(
-                        damage_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                    )
-                    min_area = max(500, (h * w) * self._MIN_AREA_FACTOR)
-                    big_contours = sorted(
-                        [c for c in contours if cv2.contourArea(c) > min_area],
-                        key=cv2.contourArea, reverse=True,
-                    )[: self._CONTOUR_CAP]
-                    cv2.drawContours(heatmap_overlay, big_contours, -1, (0, 0, 255), 2)
-
-                    valid_area  = int(cv2.countNonZero(valid_mask)) if valid_mask is not None else (h * w)
-                    damage_area = sum(cv2.contourArea(c) for c in big_contours)
-                    damage_pct  = (damage_area / max(valid_area, 1)) * 100.0
-                    result["damage_pct"] = round(damage_pct, 2)
-                    result["analysis_status"] = "ok"
-
-                    # ── Save heatmap ───────────────────────────────────────────────
-                    safe_artifact_id = safe_component(artifact_id, field="artifact_id")
-                    _out_dir = self._artifact_uploads_dir / safe_artifact_id
-                    _out_dir.mkdir(parents=True, exist_ok=True)
-                    heatmap_fname = f"heatmap_{safe_artifact_id}_{ts_ms}.jpg"
-                    cv2.imwrite(str(_out_dir / heatmap_fname), heatmap_overlay)
-                    result["heatmap_path"] = str(_out_dir / heatmap_fname)
-
-                    # ── Save aligned image ─────────────────────────────────────────
-                    if aligned_img is not None:
-                        aligned_fname = f"aligned_{safe_artifact_id}_{ts_ms}.jpg"
-                        cv2.imwrite(str(_out_dir / aligned_fname), aligned_img)
-                        aligned_url = f"/uploads/artifacts/{safe_artifact_id}/{aligned_fname}"
-                        result["aligned_image_path"] = aligned_url
-
-                    # ── YOLO: hybrid pipeline on yolo_source ───────────────────────
-                    annotated = yolo_source.copy()
-
-                    def _pad_crop(bx: int, by: int, bw: int, bh: int,
-                                  pad_factor: float, min_pad: int) -> tuple[int, int, int, int]:
-                        _side = max(bw, bh)
-                        _pad  = max(min_pad, int(_side * pad_factor))
-                        _half = (_side // 2) + _pad
-                        _cx, _cy = bx + bw // 2, by + bh // 2
-                        return (
-                            max(0, _cx - _half), max(0, _cy - _half),
-                            min(w, _cx + _half), min(h, _cy + _half),
-                        )
-
-                    if damage_pct < self._DAMAGE_PCT_GATE or not big_contours:
-                        # Fallback: full-image YOLO when damage level is very low
-                        _yolo_raw = self._model_service.detect_image(
-                            self._settings.default_ai_model_name,
-                            cv2.imencode(".jpg", yolo_source)[1].tobytes(),
-                        )
-                        for _res in (_yolo_raw or []):
-                            for _det in _res.get("detections", []):
-                                _conf = float(_det.get("confidence", 0))
-                                _name = str(_det.get("class_name", "unknown"))
-                                x1, y1, x2, y2 = [int(v) for v in _det["bbox_xyxy"]]
-                                _r_ssim = self._compute_region_ssim(
-                                    ssim_source, reference_img, x1, y1, x2, y2, padding=0
-                                )
-                                all_dets.append({
-                                    "class_name":  _name,
-                                    "confidence":  round(_conf, 4),
-                                    "bbox_xyxy":   [x1, y1, x2, y2],
-                                    "from_crop":   "full",
-                                    "region_ssim": round(float(_r_ssim), 4),
-                                })
-                    else:
-                        # Phase A: tight crops batch
-                        tight_crop_list: list = []
-                        for _c in big_contours:
-                            bx, by, bw, bh = cv2.boundingRect(_c)
-                            x1c, y1c, x2c, y2c = _pad_crop(
-                                bx, by, bw, bh, self._TIGHT_PAD_FACTOR, self._TIGHT_MIN_PAD
-                            )
-                            if x2c - x1c < 40 or y2c - y1c < 40:
-                                continue
-                            _r_ssim = self._compute_region_ssim(
-                                ssim_source, reference_img, bx, by, bx + bw, by + bh, padding=0
-                            )
-                            tight_crop_list.append(
-                                (yolo_source[y1c:y2c, x1c:x2c], x1c, y1c, "tight", float(_r_ssim))
-                            )
-
-                        tight_dets = (
-                            self._model_service.detect_crops_batch(
-                                self._settings.default_ai_model_name,
-                                tight_crop_list,
-                                conf=self._YOLO_CONF,
-                                sub_batch=self._YOLO_SUB_BATCH,
-                            ) if tight_crop_list else []
-                        )
-
-                        # Phase B: wide crops for contours without high-conf tight det
-                        wide_crop_list: list = []
-                        for _c in big_contours:
-                            bx, by, bw, bh = cv2.boundingRect(_c)
-                            _cx_c = bx + bw / 2
-                            _cy_c = by + bh / 2
-                            max_conf = max(
-                                (
-                                    d["confidence"]
-                                    for d in tight_dets
-                                    if abs((d["bbox_xyxy"][0] + d["bbox_xyxy"][2]) / 2 - _cx_c)
-                                    < bw + self._TIGHT_MIN_PAD
-                                    and abs((d["bbox_xyxy"][1] + d["bbox_xyxy"][3]) / 2 - _cy_c)
-                                    < bh + self._TIGHT_MIN_PAD
-                                ),
-                                default=0.0,
-                            )
-                            if max_conf >= self._EARLY_EXIT_CONF:
-                                continue
-                            x1c, y1c, x2c, y2c = _pad_crop(
-                                bx, by, bw, bh, self._WIDE_PAD_FACTOR, self._WIDE_MIN_PAD
-                            )
-                            if x2c - x1c < 40 or y2c - y1c < 40:
-                                continue
-                            _r_ssim = self._compute_region_ssim(
-                                ssim_source, reference_img, bx, by, bx + bw, by + bh, padding=0
-                            )
-                            wide_crop_list.append(
-                                (yolo_source[y1c:y2c, x1c:x2c], x1c, y1c, "wide", float(_r_ssim))
-                            )
-
-                        wide_dets = (
-                            self._model_service.detect_crops_batch(
-                                self._settings.default_ai_model_name,
-                                wide_crop_list,
-                                conf=self._YOLO_CONF,
-                                sub_batch=self._YOLO_SUB_BATCH,
-                            ) if wide_crop_list else []
-                        )
-
-                        # NMS across tight + wide
-                        combined = self._nms_detections(tight_dets + wide_dets, self._NMS_IOU_THRESH)
-                        for det in combined:
-                            all_dets.append({
-                                "class_name":  det["class_name"],
-                                "confidence":  det["confidence"],
-                                "bbox_xyxy":   det["bbox_xyxy"],
-                                "from_crop":   det.get("from_crop", ""),
-                                "region_ssim": det.get("region_ssim", 0.0),
-                            })
-
-            except Exception as exc:
-                logger.error(f"[analyze] pipeline error: {exc}", exc_info=True)
-                result["analysis_status"] = "failed"
-                result["analysis_error"] = f"pipeline_error:{type(exc).__name__}"
-        else:
-            result["auto_description"] = "No reference image — AI detection only."
-            try:
-                _yolo_raw = self._model_service.detect_image(
-                    self._settings.default_ai_model_name,
-                    current_path.read_bytes(),
-                )
-                for _res in (_yolo_raw or []):
-                    for _det in _res.get("detections", []):
-                        x1, y1, x2, y2 = [int(v) for v in _det["bbox_xyxy"]]
-                        all_dets.append({
-                            "class_name":  str(_det.get("class_name", "unknown")),
-                            "confidence":  round(float(_det.get("confidence", 0)), 4),
-                            "bbox_xyxy":   [x1, y1, x2, y2],
-                            "from_crop":   "full",
-                            "region_ssim": None,
-                        })
-            except Exception as exc:
-                logger.warning(f"[analyze] YOLO error (no reference): {exc}")
-                result["analysis_status"] = "failed"
-                result["analysis_error"] = f"detector_error:{type(exc).__name__}"
-
-        if result["analysis_status"] == "pending":
-            result["analysis_status"] = (
-                "ok" if result.get("ssim") is not None or all_dets else "failed"
-            )
-            if result["analysis_status"] == "failed" and result["analysis_error"] is None:
-                result["analysis_error"] = "no_analysis_signal"
-
-        # ── Annotate bboxes on annotated image (no crop outlines) ─────────────
-        try:
-            _SEVERITY_COLOR = {
-                "HIGH":   (0,   0,   255),
-                "MEDIUM": (0,   128, 255),
-                "LOW":    (0,   200, 128),
-            }
-            for det in all_dets:
-                x1, y1, x2, y2 = [int(v) for v in det["bbox_xyxy"]]
-                _conf = float(det.get("confidence", 0))
-                _name = str(det.get("class_name", "unknown"))
-                _r_ssim_val = det.get("region_ssim")
-                _severity = "HIGH" if _conf >= 0.65 else "MEDIUM" if _conf >= 0.40 else "LOW"
-                _color = _SEVERITY_COLOR[_severity]
-                _label = f"{_name} {_conf * 100:.0f}%"
-                if _r_ssim_val is not None:
-                    _label += f" (SSIM {float(_r_ssim_val) * 100:.0f}%)"
-                _thickness = 3 if _severity == "HIGH" else 2
-                cv2.rectangle(annotated, (x1, y1), (x2, y2), _color, _thickness)
-                _fs = 0.50
-                (_tw, _th), _bl = cv2.getTextSize(_label, cv2.FONT_HERSHEY_SIMPLEX, _fs, 1)
-                _yt = max(0, y1 - _th - _bl - 4)
-                cv2.rectangle(annotated, (x1, _yt), (x1 + _tw + 4, y1), _color, -1)
-                cv2.putText(
-                    annotated, _label, (x1 + 2, y1 - _bl - 2),
-                    cv2.FONT_HERSHEY_SIMPLEX, _fs, (255, 255, 255), 1, cv2.LINE_AA,
-                )
-        except Exception as draw_exc:
-            logger.warning(f"[analyze] annotation error: {draw_exc}")
-
-        # ── Save annotated image ───────────────────────────────────────────────
-        annotated_url: str | None = None
-        try:
-            safe_artifact_id = safe_component(artifact_id, field="artifact_id")
-            _out_dir = self._artifact_uploads_dir / safe_artifact_id
-            _out_dir.mkdir(parents=True, exist_ok=True)
-            detect_fname = f"detect_{safe_artifact_id}_{ts_ms}.jpg"
-            cv2.imwrite(str(_out_dir / detect_fname), annotated)
-            annotated_url = f"/uploads/artifacts/{safe_artifact_id}/{detect_fname}"
-        except Exception as save_exc:
-            logger.warning(f"[analyze] save detect image error: {save_exc}")
-
-        image_size: list[int] | None = None
-        try:
-            ah, aw = annotated.shape[:2]
-            image_size = [int(aw), int(ah)]
-        except Exception:
-            image_size = None
-
-        result["all_detections"] = all_dets
-        result["detections_json"] = json.dumps({
-            "annotated_path": annotated_url,
-            "aligned_path":   aligned_url,
-            "image_size":     image_size,
-            "all_detections": all_dets,
-            "ssim_summary": {
-                "ssim":       result.get("ssim"),
-                "ssim_gray":  result.get("ssim_gray"),
-                "ssim_color": result.get("ssim_color"),
-                "damage_pct": result.get("damage_pct"),
-            } if result.get("ssim") is not None else None,
-            "analysis_status": result.get("analysis_status"),
-            "analysis_error": result.get("analysis_error"),
-            "alignment_quality": result.get("alignment_quality"),
-            "sift_inliers": result.get("sift_inliers", 0),
-            "valid_mask_ratio": result.get("valid_mask_ratio"),
-        })
-
-        det_count = len(all_dets)
-        ssim_str = f" | SSIM {result['ssim'] * 100:.1f}%" if result.get("ssim") is not None else ""
-        result["auto_description"] = (
-            f"{det_count} region(s) detected{ssim_str}." if det_count
-            else f"No damage detected{ssim_str}."
-        )
-        logger.info("[analyze] status=%s %d detection(s), SSIM=%.4f for artifact=%s",
-                    result.get("analysis_status"), det_count,
-                    result.get("ssim") or 0.0, artifact_id)
-        return result
-
-    @staticmethod
-    def _nms_detections(dets: list[dict], iou_threshold: float = 0.45) -> list[dict]:
-        """Class-aware NMS for detections from tight/wide crops.
-
-        Overlap between different defect classes is not a duplicate.  The old
-        class-agnostic suppression could silently remove a real finding.
+        P0 (default, pbl_legacy) runs the original code (moved verbatim to
+        ``change_detection.legacy``); P1-P4 run the CITA pipelines selected by
+        the active profile and add the optional keys ``pipeline``,
+        ``roi_afd_px``, ``ecc_ok``, ``ai_input_package_path``.
         """
-        if not dets:
-            return []
-        keep: list[dict] = []
-        groups: dict[str, list[dict]] = {}
-        for det in dets:
-            groups.setdefault(str(det.get("class_name", "unknown")), []).append(det)
-        for group in groups.values():
-            dets_sorted = sorted(
-                group, key=lambda d: float(d.get("confidence", 0)), reverse=True
+        pipeline = getattr(getattr(self._profile, "inspection", None), "pipeline", "P0")
+        if pipeline == "P0":
+            return analyze_legacy(
+                current_path=current_path, reference_path=reference_path, artifact_id=artifact_id,
+                ts_ms=ts_ms, model_service=self._model_service,
+                model_name=self._settings.default_ai_model_name,
+                uploads_artifacts_dir=self._artifact_uploads_dir,
             )
-            while dets_sorted:
-                d = dets_sorted.pop(0)
-                keep.append(d)
-                ax1, ay1, ax2, ay2 = [float(v) for v in d["bbox_xyxy"]]
-                area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-                remaining: list[dict] = []
-                for e in dets_sorted:
-                    bx1, by1, bx2, by2 = [float(v) for v in e["bbox_xyxy"]]
-                    ix1 = max(ax1, bx1); iy1 = max(ay1, by1)
-                    ix2 = min(ax2, bx2); iy2 = min(ay2, by2)
-                    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-                    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-                    iou = inter / max(area_a + area_b - inter, 1e-9)
-                    if iou <= iou_threshold:
-                        remaining.append(e)
-                dets_sorted = remaining
-        return keep
+        from app.modules.change_detection.pipelines import run_server_pipeline
+        return run_server_pipeline(
+            self._profile, current_path=current_path, reference_path=reference_path,
+            artifact_id=artifact_id, ts_ms=ts_ms, model_service=self._model_service,
+            model_name=self._settings.default_ai_model_name,
+            uploads_artifacts_dir=self._artifact_uploads_dir,
+            golden_dir=self._settings.uploads_dir / "golden_poses",
+        )
 
-    @staticmethod
-    def _sift_align_with_mask(img: Any, reference: Any) -> tuple[Any, Any, int]:
-        """SIFT + Homography alignment. Returns (aligned, valid_mask, inlier_count)."""
-        try:
-            import cv2
-            import numpy as np
-            gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            gray_ref = cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY)
-
-            sift = cv2.SIFT_create(nfeatures=3000)
-            kp1, des1 = sift.detectAndCompute(gray_img, None)
-            kp2, des2 = sift.detectAndCompute(gray_ref, None)
-
-            if des1 is None or des2 is None or len(kp1) < 15 or len(kp2) < 15:
-                resized = cv2.resize(img, (reference.shape[1], reference.shape[0]))
-                return resized, None, 0
-
-            flann = cv2.FlannBasedMatcher({"algorithm": 1, "trees": 5}, {"checks": 50})
-            matches = flann.knnMatch(des1, des2, k=2)
-            good = [m for pair in matches if len(pair) == 2
-                    for m, n in [pair] if m.distance < 0.65 * n.distance]
-
-            if len(good) < 15:
-                resized = cv2.resize(img, (reference.shape[1], reference.shape[0]))
-                return resized, None, len(good)
-
-            src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-            dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-            H, inlier_mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 3.0)
-            if H is None:
-                resized = cv2.resize(img, (reference.shape[1], reference.shape[0]))
-                return resized, None, len(good)
-
-            inliers = int(inlier_mask.sum()) if inlier_mask is not None else 0
-            h, w = reference.shape[:2]
-            aligned = cv2.warpPerspective(img, H, (w, h))
-
-            # Build valid pixel mask (avoid black warped borders)
-            ones = np.ones(img.shape[:2], dtype=np.uint8) * 255
-            valid_mask = cv2.warpPerspective(ones, H, (w, h))
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
-            valid_mask = cv2.erode(valid_mask, kernel, iterations=2)
-
-            return aligned, valid_mask, inliers
-        except Exception:
-            return None, None, 0
-
-    @staticmethod
-    def _compute_region_ssim(img: Any, reference: Any, x1: int, y1: int, x2: int, y2: int, padding: int = 20) -> float:
-        """SSIM for a YOLO bounding-box region (with padding). Returns score 0-1."""
-        try:
-            from skimage.metrics import structural_similarity
-            h, w = img.shape[:2]
-            px1, py1 = max(0, x1 - padding), max(0, y1 - padding)
-            px2, py2 = min(w, x2 + padding), min(h, y2 + padding)
-            crop_img = img[py1:py2, px1:px2]
-            crop_ref = reference[py1:py2, px1:px2]
-            if crop_img.shape[0] < 16 or crop_img.shape[1] < 16:
-                return 1.0
-            import cv2
-            gray_i = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
-            gray_r = cv2.cvtColor(crop_ref, cv2.COLOR_BGR2GRAY)
-            win = min(7, min(gray_i.shape) - 1)
-            if win % 2 == 0:
-                win -= 1
-            if win < 3:
-                return 1.0
-            score, _ = structural_similarity(gray_r, gray_i, full=True, win_size=win)
-            return float(score)
-        except Exception:
-            return 1.0
+    # Thin delegates kept for existing callers (tools, tests).
+    _nms_detections = staticmethod(legacy_inspection.nms_detections)
+    _sift_align_with_mask = staticmethod(legacy_inspection.sift_align_with_mask)
+    _compute_region_ssim = staticmethod(legacy_inspection.compute_region_ssim)
 
     def _run_detector_on_path(self, path: Path) -> dict[str, Any]:
         """Run the configured detector with an explicit failure contract.
@@ -856,6 +420,18 @@ class InspectionService:
             # retry captures or motor commands.
             capture_metadata["alignment_status"] = "disabled_pose_flag"
             auto_alignment_loop = False
+
+        # CITA experiment arms (workflow.cita_arm or a non-legacy control
+        # profile) use the AlignmentSession state machine; everything else
+        # follows the cita-baseline loop below unchanged.
+        cita_profile = (self._cita_alignment_profile(workflow)
+                        if auto_alignment_loop and device_id else None)
+        if cita_profile is not None:
+            return self._handle_cita_alignment(
+                profile=cita_profile, saved_path=saved_path, size_bytes=size_bytes, device_id=device_id,
+                artifact_id=artifact_id, workflow=workflow, calibration_data=calibration_data,
+                capture_metadata=capture_metadata, ai_result=ai_result,
+            )
 
         # ── Alignment iteration guard ────────────────────────────────────────
         # Each upload during an active alignment loop counts as one iteration.
@@ -977,61 +553,47 @@ class InspectionService:
                 # Phase 1 → Rotation only   (Pan, Tilt servos). Runs after steppers.
                 # Alternates: 0 → 1 → 0 → 1 … until both axes are within tolerance.
                 # Smart-skip: if current phase's axis is already converged, jump ahead.
-                raw_move_x = float(deviation.get("delta_x", 0.0)) * 1000.0 * self._settings.steps_per_mm * self._settings.sign_move_x
-                raw_move_z = float(deviation.get("delta_z", 0.0)) * 1000.0 * self._settings.steps_per_mm * self._settings.sign_move_z
-                raw_pan    = float(deviation.get("delta_pan", 0.0)) * self._settings.sign_rotate_pan
-                raw_tilt   = float(deviation.get("delta_tilt", 0.0)) * self._settings.sign_rotate_tilt
-
-                motor_cmd = {
-                    "enabled": True,
-                    "move_x": raw_move_x,
-                    "move_z": raw_move_z,
-                    "rotate_pan": raw_pan,
-                    "rotate_tilt": raw_tilt,
-                }
+                # Fixed mapping (C-A logic) lives in control.FixedMappingController;
+                # the computation below is identical to cita-baseline.
+                fixed_step = self._fixed_mapping_controller().legacy_step(
+                    deviation, self._alignment_phase.get(alignment_key, 0)
+                )
+                raw_move_x, raw_move_z, raw_pan, raw_tilt = fixed_step["raw"]
+                motor_cmd = fixed_step["motor_cmd"]
                 if pose_result is not None:
                     pose_result["motor_command"] = motor_cmd
                 deviation["motor_command"] = motor_cmd
 
                 if device_id:
 
-                    within_trans = bool(deviation.get("within_trans_tolerance", False))
-                    within_rot   = bool(deviation.get("within_rot_tolerance",   False))
-
                     # Resolve active phase; default to 0 (translation) if somehow missing.
                     current_phase = self._alignment_phase.get(alignment_key, 0)
 
                     # Smart-skip: if this phase's axis is already within tolerance,
                     # advance immediately to the other phase (avoids a wasted round-trip).
-                    if current_phase == 0 and within_trans and not within_rot:
-                        current_phase = 1
-                        self._alignment_phase[alignment_key] = 1
+                    if fixed_step["smart_skip"] is not None:
+                        current_phase = fixed_step["phase_used"]
+                        self._alignment_phase[alignment_key] = current_phase
                         self._persist_alignment_state()
                         logger.info(
-                            "[alignment] Trans within tolerance → skip to ROTATION phase "
+                            "[alignment] %s within tolerance → skip to %s phase "
                             "(device=%s, iter=%d)",
-                            device_id, current_iter,
-                        )
-                    elif current_phase == 1 and within_rot and not within_trans:
-                        current_phase = 0
-                        self._alignment_phase[alignment_key] = 0
-                        self._persist_alignment_state()
-                        logger.info(
-                            "[alignment] Rot within tolerance → skip to TRANSLATION phase "
-                            "(device=%s, iter=%d)",
+                            "Trans" if current_phase == 1 else "Rot",
+                            "ROTATION" if current_phase == 1 else "TRANSLATION",
                             device_id, current_iter,
                         )
 
+                    fields = fixed_step["fields"]
                     if current_phase == 0:
                         # ── Phase 0: Translation — X, Z steppers only ──────────
                         mc_payload: dict[str, Any] = {
                             "action": "move",
                             "task_id": self._command_service.build_task_id(),
                             "artifact_id": artifact_id,
-                            "x_steps": abs(int(round(raw_move_x))),
-                            "x_dir":   1 if raw_move_x >= 0 else -1,
-                            "z_steps": abs(int(round(raw_move_z))),
-                            "z_dir":   1 if raw_move_z >= 0 else -1,
+                            "x_steps": fields["x_steps"],
+                            "x_dir":   fields["x_dir"],
+                            "z_steps": fields["z_steps"],
+                            "z_dir":   fields["z_dir"],
                             "yaw_delta":   0.0,   # servos held during translation
                             "pitch_delta": 0.0,
                             "alignment_phase": "translation",
@@ -1206,4 +768,162 @@ class InspectionService:
         self._alignment_counters.pop(alignment_key, None)
         self._alignment_start_ts.pop(alignment_key, None)
         self._alignment_phase.pop(alignment_key, None)
+        self._cita_sessions.pop(alignment_key, None)
         self._persist_alignment_state()
+
+    # ── CITA experiment alignment (Phase 3) ────────────────────────────────────
+
+    def _fixed_mapping_controller(self):
+        from app.modules.artifact_pose.control import FixedMappingController
+        s = self._settings
+        return FixedMappingController(steps_per_mm=s.steps_per_mm, sign_x=s.sign_move_x, sign_z=s.sign_move_z,
+                                      sign_pan=s.sign_rotate_pan, sign_tilt=s.sign_rotate_tilt)
+
+    @staticmethod
+    def _profile_needs_cita_loop(profile: Any) -> bool:
+        if profile is None:
+            return False
+        c = profile.control
+        return bool(c.controller != "fixed_mapping" or c.max_iterations is not None
+                    or c.tol_translation_mm is not None or c.tol_rotation_deg is not None
+                    or c.signs is not None or profile.motion_payload() or profile.pose.frames > 1)
+
+    def _cita_alignment_profile(self, workflow: Any) -> Any:
+        arm = workflow.get("cita_arm") if isinstance(workflow, dict) else None
+        if arm:
+            from app.experiments.registry import load_arm_profile
+            cache = self.__dict__.setdefault("_cita_profile_cache", {})
+            if arm not in cache:
+                cache[arm] = load_arm_profile(str(arm))
+            return cache[arm]
+        return self._profile if self._profile_needs_cita_loop(self._profile) else None
+
+    @property
+    def _cita_sessions(self) -> dict:
+        return self.__dict__.setdefault("_cita_sessions_store", {})
+
+    def _cita_logger(self):
+        log = self.__dict__.get("_cita_trial_logger")
+        if log is None:
+            from datetime import datetime, timezone
+            from app.experiments.trial_log import TrialLogger
+            root = getattr(self._profile, "logging", None)
+            run_id = "server_" + datetime.now(timezone.utc).strftime("%Y%m%d")
+            log = TrialLogger("E2", root=root.root if root else "logs/experiments", run_id=run_id,
+                              profile=self._profile, resume=True)
+            self.__dict__["_cita_trial_logger"] = log
+        return log
+
+    def _handle_cita_alignment(self, *, profile: Any, saved_path: Path, size_bytes: int, device_id: str,
+                               artifact_id: str, workflow: dict, calibration_data: Any,
+                               capture_metadata: dict, ai_result: Any) -> dict[str, Any]:
+        from app.modules.artifact_pose.alignment_loop import AlignmentSession, build_session
+        from app.modules.artifact_pose.control import make_controller
+
+        key = f"{device_id}:{artifact_id}"
+        trial_id = str(workflow.get("cita_trial_id") or "")
+        entry = self._cita_sessions.get(key)
+        if entry is None or entry.get("trial_id") != trial_id or entry.get("arm") != profile.name:
+            session = build_session(profile, self._settings, arm=profile.name, device_id=device_id,
+                                    artifact_id=artifact_id)
+            entry = {"trial_id": trial_id, "arm": profile.name, "frames": [], "t_start": time.time()}
+        else:
+            controller = make_controller(profile, self._settings, device_id=device_id, artifact_id=artifact_id)
+            session = AlignmentSession.from_state(entry["session"], controller)
+        entry["frames"].append(str(saved_path))
+        capture_metadata.update({"cita_arm": profile.name, "cita_trial_id": trial_id})
+
+        def publish(payload: dict) -> tuple[bool, Any]:
+            if not self._settings.auto_dispatch_pose_command:
+                return False, {"reason": "auto_dispatch_disabled"}
+            return self._mqtt_bridge.publish_command(device_id, payload)
+
+        def capture_payload(prefix: str) -> dict:
+            return {"action": "capture", "task_id": self._command_service.build_task_id(),
+                    "artifact_id": artifact_id, "capture_job": "alignment", "keep_pose": True,
+                    "basename": f"{prefix}_{artifact_id}_{int(time.time() * 1000)}", "workflow": workflow}
+
+        def save_entry(done: bool) -> None:
+            if done:
+                self._cita_sessions.pop(key, None)
+            else:
+                entry["session"] = session.to_state()
+                self._cita_sessions[key] = entry
+            self._persist_alignment_state()
+
+        def respond(status: str, info: Any = None, pose_result: Any = None) -> dict[str, Any]:
+            capture_metadata["alignment_status"] = status
+            self._command_service.record_latest_capture_metadata(device_id, capture_metadata)
+            return {"ok": True, "message": "Uploaded successfully", "saved_file": saved_path.name,
+                    "size_bytes": size_bytes, "pose_result": pose_result,
+                    "correction_dispatch": {"status": status, "info": info, "cita_arm": profile.name,
+                                            "alignment_iteration": session.iteration},
+                    "ai_result": ai_result}
+
+        if time.time() - entry["t_start"] >= float(self._settings.alignment_timeout_sec):
+            session._finish("fail", "timeout", {})
+        else:
+            frames_needed = int(profile.pose.frames)
+            if len(entry["frames"]) < frames_needed:
+                # M5: more static frames at the same pose (no homing).
+                ok, info = publish(capture_payload("align_frame"))
+                save_entry(False)
+                return respond("collecting_frames" if ok else "dispatch_failed", info)
+            frames = [Path(p) for p in entry["frames"][:frames_needed]]
+            entry["frames"] = []
+            try:
+                pose_result = self._pose_service.correct_image(frames[0], artifact_id=artifact_id or None,
+                                                               profile=profile, extra_image_paths=frames[1:])
+            except Exception as exc:  # pose failure counts as an unusable observation
+                logger.warning("[cita-alignment] pose failed: %s", exc)
+                pose_result = {"accepted": False, "status": f"error:{type(exc).__name__}"}
+            observation = pose_result.get("cita_pose") or pose_result
+            if pose_result.get("deviation"):
+                capture_metadata["pose_deviation"] = pose_result["deviation"]
+            decision = session.on_observation(observation, extra={"frames": [p.name for p in frames]})
+            try:
+                self._cita_logger().log(arm=profile.name, input={"device_id": device_id, "artifact_id": artifact_id,
+                                                                 "trial_id": trial_id, "frames": [str(p) for p in frames]},
+                                        output={"iteration": decision.record}, status=decision.kind,
+                                        error=decision.reason, record_type="iteration")
+            except Exception as log_exc:  # logging must never break the device loop
+                logger.warning("[cita-alignment] log failed: %s", log_exc)
+            if decision.kind == "move":
+                payload = {"action": "move", "task_id": self._command_service.build_task_id(),
+                           "artifact_id": artifact_id, **decision.payload,
+                           "alignment_iteration": session.iteration, "workflow": workflow}
+                ok, info = publish(payload)
+                if not ok:
+                    session._finish("fail", "dispatch_failed", {})
+                else:
+                    save_entry(False)
+                    return respond(f"cita_{decision.record.get('command', {}).get('kind', 'move')}", info, pose_result)
+            elif decision.kind == "retry":
+                ok, info = publish(capture_payload("align_retry"))
+                save_entry(False)
+                return respond("no_pose_retry" if ok else "dispatch_failed", info, pose_result)
+
+        summary = session.summary()
+        done = session.finished is not None and session.finished.kind == "done"
+        if done and artifact_id:
+            final_dir = self._artifact_uploads_dir / safe_component(artifact_id, field="artifact_id")
+            final_dir.mkdir(parents=True, exist_ok=True)
+            final_path = final_dir / f"final_aligned_{artifact_id}_{int(time.time() * 1000)}.png"
+            final_path.write_bytes(saved_path.read_bytes())
+            capture_metadata["final_aligned_path"] = str(final_path)
+            summary["final_aligned_path"] = str(final_path)
+        capture_metadata.update(alignment_total_iterations=session.iteration, cita_summary=summary)
+        try:
+            self._cita_logger().log(arm=profile.name, input={"device_id": device_id, "artifact_id": artifact_id,
+                                                             "trial_id": trial_id},
+                                    output=summary, status="success" if done else "failed",
+                                    error=None if done else summary.get("stop_reason"), record_type="summary")
+        except Exception as log_exc:
+            logger.warning("[cita-alignment] log failed: %s", log_exc)
+        end_payload = {"action": "alignment_complete" if done else "alignment_failed",
+                       "task_id": self._command_service.build_task_id(), "artifact_id": artifact_id,
+                       "device_id": device_id, "total_iterations": session.iteration,
+                       "reason": summary.get("stop_reason"), "workflow": workflow}
+        ok, info = publish(end_payload)
+        save_entry(True)
+        return respond("complete" if done else "failed", info)

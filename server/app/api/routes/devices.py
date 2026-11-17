@@ -140,6 +140,8 @@ def queue_move(
     if not container.mqtt_bridge._valid_device_id(device_code):
         raise HTTPException(status_code=400, detail="Invalid device code")
     payload = cmd.dict()
+    if payload.get("motion_profile") is None:
+        payload.pop("motion_profile", None)  # keep the legacy payload byte-identical
     if not payload.get("task_id"):
         payload["task_id"] = container.command_service.build_task_id()
 

@@ -23,6 +23,10 @@ class StartAlignmentRequest(BaseModel):
     artifact_id: str = "artifact_demo_001"
     use_latest_metadata: bool = True
     camera_overrides: dict[str, Any] = Field(default_factory=dict)
+    # CITA experiments (optional; absent = cita-baseline behaviour).
+    cita_arm: str | None = Field(default=None, pattern=r"^C-[A-D]$")
+    cita_trial_id: str | None = Field(default=None, max_length=80, pattern=r"^[A-Za-z0-9_.:-]+$")
+    keep_pose: bool | None = None
 
 
 class StartInitializationRequest(BaseModel):

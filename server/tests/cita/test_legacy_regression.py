@@ -91,3 +91,112 @@ def test_estimate_pose_legacy_equals_run_correction_step(tmp_path):
         np.testing.assert_allclose(est.tvec, ref["hybrid"]["tvec"], atol=1e-10)
         np.testing.assert_allclose(est.deviation["translation_world_m"],
                                    ref["deviation"]["translation_world_m"], atol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Inspection (P0) and alignment loop (C-A logic)
+# ---------------------------------------------------------------------------
+
+def _inspection_service(root, profile=None, pose_service=None, mqtt=None):
+    from app.services.command_service import CommandService
+    from app.services.inspection_service import InspectionService
+    from mocks import MockModelService
+    return InspectionService(settings=fake_settings(root), pose_service=pose_service,
+                             model_service=MockModelService(), command_service=CommandService(),
+                             mqtt_bridge=mqtt, profile=profile)
+
+
+@pytest.mark.parametrize("profile_name", [None, "pbl_legacy", "P0"])
+@pytest.mark.parametrize("name", ["inspect_unchanged", "inspect_damaged"])
+def test_p0_inspection_matches_baseline(tmp_path, profile_name, name):
+    exp = load("inspection")[name]
+    service = _inspection_service(tmp_path, load_profile(profile_name) if profile_name else None)
+    # The legacy SIFT/FLANN matcher draws from cv::theRNG(); the baseline was
+    # captured in a fresh process (default state = seed 0) analysing
+    # inspect_unchanged first, then inspect_damaged. Replay that order.
+    cv2.setRNGSeed(0)
+    if name == "inspect_damaged":
+        service._analyze_against_reference(current_path=SYN / "inspect_unchanged.png",
+                                           reference_path=SYN / "golden_left.png", artifact_id=ARTIFACT, ts_ms=0)
+    res = service._analyze_against_reference(current_path=SYN / f"{name}.png",
+                                             reference_path=SYN / "golden_left.png", artifact_id=ARTIFACT, ts_ms=0)
+    for key in ("analysis_status", "analysis_error", "alignment_quality", "sift_inliers", "damage_pct",
+                "auto_description"):
+        assert res[key] == exp[key], key
+    for key in ("ssim", "ssim_gray", "ssim_color", "valid_mask_ratio"):
+        assert res[key] == pytest.approx(exp[key], abs=1e-9), key
+    det = json.loads(res["detections_json"])
+    assert det["all_detections"] == exp["detections_json"]["all_detections"]
+    assert res["all_detections"] == exp["all_detections"]
+    assert Path(res["heatmap_path"]).name == exp["heatmap_path"]
+    assert set(exp) <= set(res)
+
+
+class _Recorder:
+    def __init__(self):
+        self.published = []
+
+    def publish_command(self, device_id, payload):
+        self.published.append(json.loads(json.dumps(payload)))
+        return True, f"cmd/{device_id}"
+
+
+class _StubPose:
+    def __init__(self, deviations):
+        self._devs = [dict(d) for d in deviations]
+
+    def correct_image(self, image_path, artifact_id=None, **kw):
+        return {"deviation": dict(self._devs.pop(0)), "accepted": True}
+
+
+@pytest.mark.parametrize("profile_name", [None, "pbl_legacy"])
+def test_alignment_loop_commands_match_baseline(tmp_path, profile_name):
+    import asyncio
+    import io
+    from starlette.datastructures import UploadFile
+    exp = load("alignment")
+    recorder = _Recorder()
+    service = _inspection_service(tmp_path, load_profile(profile_name) if profile_name else None,
+                                  pose_service=_StubPose(exp["deviations"]), mqtt=recorder)
+    png = (SYN / "current_00.png").read_bytes()
+    meta = json.dumps({"device_id": "dev01", "artifact_id": ARTIFACT,
+                       "calibration_data": {"workflow": {"auto_alignment_loop": True}}})
+    for i, step in enumerate(exp["steps"]):
+        before = len(recorder.published)
+        resp = asyncio.run(service.handle_upload(UploadFile(io.BytesIO(png), filename=f"u{i}.png"), meta))
+        cmds = recorder.published[before:]
+        for c in cmds:
+            c.pop("task_id", None)
+        assert cmds == step["commands"], i
+        dispatch = resp.get("correction_dispatch") or {}
+        assert dispatch.get("status") == step["dispatch_status"]
+        assert dispatch.get("alignment_phase") == step["dispatch_phase"]
+        assert (resp.get("pose_result") or {}).get("motor_command") == step["motor_command"]
+
+
+def test_fixed_mapping_controller_equals_inline_legacy_formula():
+    from app.modules.artifact_pose.control import FixedMappingController
+    rng = np.random.default_rng(0)
+    ctl = FixedMappingController(steps_per_mm=800.0, sign_x=-1, sign_z=-1, sign_pan=-1, sign_tilt=-1)
+    for _ in range(500):
+        dev = {"delta_x": float(rng.normal(0, 0.02)), "delta_z": float(rng.normal(0, 0.02)),
+               "delta_pan": float(rng.normal(0, 3)), "delta_tilt": float(rng.normal(0, 3)),
+               "within_trans_tolerance": bool(rng.integers(2)), "within_rot_tolerance": bool(rng.integers(2))}
+        phase = int(rng.integers(2))
+        out = ctl.legacy_step(dev, phase)
+        # cita-baseline inline formula (inspection_service.py @ eaed45e, lines 977-1060)
+        rx = dev["delta_x"] * 1000.0 * 800.0 * -1
+        rz = dev["delta_z"] * 1000.0 * 800.0 * -1
+        rp, rt = dev["delta_pan"] * -1, dev["delta_tilt"] * -1
+        if phase == 0 and dev["within_trans_tolerance"] and not dev["within_rot_tolerance"]:
+            phase = 1
+        elif phase == 1 and dev["within_rot_tolerance"] and not dev["within_trans_tolerance"]:
+            phase = 0
+        if phase == 0:
+            exp = {"x_steps": abs(int(round(rx))), "x_dir": 1 if rx >= 0 else -1, "z_steps": abs(int(round(rz))),
+                   "z_dir": 1 if rz >= 0 else -1, "yaw_delta": 0.0, "pitch_delta": 0.0, "alignment_phase": "translation"}
+        else:
+            exp = {"x_steps": 0, "x_dir": 1, "z_steps": 0, "z_dir": 1, "yaw_delta": rp, "pitch_delta": rt,
+                   "alignment_phase": "rotation"}
+        assert out["fields"] == exp and out["next_phase"] == 1 - phase
+        assert out["motor_cmd"] == {"enabled": True, "move_x": rx, "move_z": rz, "rotate_pan": rp, "rotate_tilt": rt}

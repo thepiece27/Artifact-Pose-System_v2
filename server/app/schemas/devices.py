@@ -33,6 +33,8 @@ class MoveCommand(BaseModel):
     x_dir: int = 1
     z_dir: int = 1
     artifact_id: str | None = None
+    # CITA I2 (optional): forwarded to the device; None = legacy behaviour.
+    motion_profile: dict[str, Any] | None = None
     basename: str | None = None
     capture_job: str | None = None
     autofocus_mode: str | None = None
