@@ -130,3 +130,28 @@ def estimate_markerless(image, golden: dict, K, D, *, ratio: float = 0.6, sigma_
                timings_ms={"features": (t1 - t0) * 1000, "pnp": (t2 - t1) * 1000,
                            "refine": (t3 - t2) * 1000, "total": (t3 - t0) * 1000})
     return out
+
+
+def save_markerless(path, golden: dict) -> None:
+    """Persist an M2 golden next to golden_pose.yaml (npz + JSON metadata)."""
+    import json
+    from pathlib import Path
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    meta = {k: golden[k] for k in ("image_size_full", "image_size_used", "resize_to", "baseline_m",
+                                   "slider_x_sign_in_camera", "n_matches", "n_valid", "ratio", "baseline_check")}
+    tmp = path.with_suffix(".tmp.npz")
+    np.savez(tmp, points_3d=golden["points_3d"], points_2d=golden["points_2d"],
+             descriptors=golden["descriptors"], K_used=golden["K_used"], D=golden["D"],
+             T_right_left=np.asarray(golden["T_right_left"]), meta=np.array(json.dumps(meta, default=float)))
+    tmp.replace(path)
+
+
+def load_markerless(path) -> dict:
+    import json
+    with np.load(path, allow_pickle=False) as z:
+        meta = json.loads(str(z["meta"]))
+        out = {k: z[k] for k in ("points_3d", "points_2d", "descriptors", "K_used", "D", "T_right_left")}
+    out.update(meta)
+    out["image_size_full"] = tuple(out["image_size_full"])
+    return out

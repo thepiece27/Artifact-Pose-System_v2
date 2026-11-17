@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.core.config import Settings
+from app.experiments.profiles import active_profile
 from app.services.command_service import CommandService
 from app.services.device_registry import DeviceRegistry
 from app.services.inspection_service import InspectionService
@@ -14,6 +15,9 @@ from app.services.pose_service import PoseService
 class AppContainer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        # CITA experiment profile (CITA_PROFILE env, default pbl_legacy = old behaviour).
+        self.profile = active_profile()
+        print(f"[STARTUP] CITA profile: {self.profile.name} ({self.profile.profile_hash[:12]})")
         self.device_registry = DeviceRegistry(settings.data_dir / "device_registry.json")
         self.command_service = CommandService(
             ack_history_limit=settings.ack_history_limit,
@@ -21,13 +25,14 @@ class AppContainer:
         )
         self.mqtt_bridge = MqttBridge(settings, self.command_service)
         self.model_service = ModelService(settings)
-        self.pose_service = PoseService(settings)
+        self.pose_service = PoseService(settings, profile=self.profile)
         self.inspection_service = InspectionService(
             settings=settings,
             pose_service=self.pose_service,
             model_service=self.model_service,
             command_service=self.command_service,
             mqtt_bridge=self.mqtt_bridge,
+            profile=self.profile,
         )
 
     def startup(self) -> None:

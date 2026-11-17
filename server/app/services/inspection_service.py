@@ -31,8 +31,11 @@ class InspectionService:
         model_service: ModelService,
         command_service: CommandService,
         mqtt_bridge: MqttBridge,
+        profile: Any = None,
     ) -> None:
         self._settings = settings
+        # CITA profile (None / pbl_legacy = cita-baseline behaviour).
+        self._profile = profile
         self._pose_service = pose_service
         self._model_service = model_service
         self._command_service = command_service

@@ -28,16 +28,37 @@ def _to_jsonable(value: Any) -> Any:
 
 
 class PoseService:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, profile: Any = None) -> None:
         self._settings = settings
         self._module_root = Path(__file__).resolve().parents[1] / "modules" / "artifact_pose"
+        # CITA experiment profile; None / pbl_legacy = behaviour of cita-baseline.
+        self._profile = profile
 
-    def _quality(self):
-        return replace(
+    @property
+    def profile(self):
+        return self._profile
+
+    def _quality(self, profile: Any = None):
+        quality = replace(
             DEFAULT_QUALITY,
             translation_tolerance_m=self._settings.trans_tolerance_mm / 1000.0,
             rotation_tolerance_deg=self._settings.rot_tolerance_deg,
         )
+        control = getattr(profile, "control", None)
+        if control is not None and control.tol_translation_mm is not None:
+            quality = replace(quality, translation_tolerance_m=control.tol_translation_mm / 1000.0)
+        if control is not None and control.tol_rotation_deg is not None:
+            quality = replace(quality, rotation_tolerance_deg=control.tol_rotation_deg)
+        return quality
+
+    @staticmethod
+    def _is_legacy_pose(profile: Any) -> bool:
+        return profile is None or profile.pose.method == "legacy"
+
+    @staticmethod
+    def _is_legacy_golden(profile: Any) -> bool:
+        return profile is None or (profile.golden.stereo_source == "diamond"
+                                   and not profile.golden.build_markerless)
 
     # -- Per-artifact golden pose path -----------------------------------------
 
@@ -114,13 +135,22 @@ class PoseService:
             "camera_lens_position": lens_position,
             "golden_pose": str(self._settings.artifact_golden_pose),
             "message": message,
+            "cita_profile": getattr(self._profile, "name", None),
+            "cita_profile_hash": getattr(self._profile, "profile_hash", None),
         }
 
     # -- Pose correction -------------------------------------------------------
 
     def correct_image(
-        self, image_path: Path, artifact_id: str | None = None
+        self, image_path: Path, artifact_id: str | None = None, *,
+        profile: Any = None, extra_image_paths: list[Path] | None = None,
     ) -> dict[str, Any]:
+        """Pose correction. ``profile`` overrides the server profile for this
+        call (CITA arm selected per alignment session); ``extra_image_paths``
+        are the additional static frames of M5."""
+        profile = profile if profile is not None else self._profile
+        if not self._is_legacy_pose(profile):
+            return self._correct_image_cita(image_path, artifact_id, profile, extra_image_paths or [])
         K, D = pose_common.load_camera_params(self._settings.artifact_camera_params)
         if K is None:
             raise RuntimeError(
@@ -145,6 +175,35 @@ class PoseService:
         result["g2o_enabled"] = bool(pose_common.HAS_CPP)
         return _to_jsonable(result)
 
+    def _correct_image_cita(self, image_path: Path, artifact_id: str | None, profile: Any,
+                            extra_image_paths: list[Path]) -> dict[str, Any]:
+        from app.modules.artifact_pose import methods as pose_methods
+        from app.modules.artifact_pose.markerless import load_markerless
+        K, D = pose_common.load_camera_params(self._settings.artifact_camera_params)
+        golden_pose_path = self._resolve_golden_pose_path(artifact_id)
+        if golden_pose_path is None:
+            raise RuntimeError(f"Golden pose not found for artifact '{artifact_id}'")
+        images = []
+        for path in [image_path, *extra_image_paths]:
+            img = cv2.imread(str(path))
+            if img is None:
+                raise RuntimeError(f"Can not read image: {path}")
+            images.append(img)
+        size = (int(images[0].shape[1]), int(images[0].shape[0]))
+        quality = self._quality(profile)
+        cfg = pose_methods.PoseMethodConfig.from_profile(profile, quality=quality)
+        golden = pose_methods.golden_from_file(golden_pose_path, K, D, size)
+        if cfg.method == "M2":
+            ml = golden_pose_path.with_name("golden_markerless.npz")
+            if not ml.exists():
+                raise RuntimeError("M2 profile requires a markerless golden; re-run initialization with it")
+            golden.markerless = load_markerless(ml)
+        estimate = pose_methods.estimate_pose(images, golden, cfg)
+        result = pose_methods.estimate_to_correction_result(estimate, quality)
+        result.update(integrated_module=True, g2o_enabled=bool(pose_common.HAS_CPP),
+                      cita_profile=profile.name, cita_profile_hash=profile.profile_hash)
+        return _to_jsonable(result)
+
     # -- Golden pose initialization --------------------------------------------
 
     def initialize_golden(
@@ -164,10 +223,33 @@ class PoseService:
             raise RuntimeError("Can not read left/right image for initialization")
         output_path = self._golden_pose_path(artifact_id)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        profile = self._profile
+        if not self._is_legacy_golden(profile):
+            return self._initialize_golden_cita(left, right, K, D, output_path, profile)
         result = pose_initialize.run_initialization(
             left, right, K, D, output=output_path, strategy="hybrid", backend="auto",
             quality=self._quality(),
         )
         if result is None:
             raise RuntimeError("Golden initialization failed")
+        return _to_jsonable(result)
+
+    def _initialize_golden_cita(self, left, right, K, D, output_path: Path, profile: Any) -> dict[str, Any]:
+        from app.modules.artifact_pose import methods as pose_methods
+        from app.modules.artifact_pose.markerless import build_markerless_golden, save_markerless
+        quality = self._quality(profile)
+        baseline_m = profile.golden.baseline_mm / 1000.0
+        golden = pose_methods.build_hybrid_golden(
+            left, right, K, D, output_path, stereo_source=profile.golden.stereo_source,
+            baseline_m=baseline_m, quality=quality,
+            backend="python" if profile.pose.backend == "auto" else profile.pose.backend)
+        result: dict[str, Any] = {"points_3d": golden["points_3d"], "points_2d": golden["points_2d"],
+                                  "stereo": golden["metadata"].get("stereo"), "output": str(output_path),
+                                  "cita_profile": profile.name}
+        if profile.golden.build_markerless:
+            ml = build_markerless_golden(left, right, K, D, baseline_m=baseline_m,
+                                         ratio=profile.pose.ratio or 0.6,
+                                         resize_to=profile.pose.resize_to, quality=quality)
+            save_markerless(output_path.with_name("golden_markerless.npz"), ml)
+            result["markerless"] = {"n_valid": ml["n_valid"], "baseline_check": ml["baseline_check"]}
         return _to_jsonable(result)

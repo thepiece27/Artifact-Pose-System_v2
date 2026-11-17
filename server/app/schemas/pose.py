@@ -15,6 +15,8 @@ class PoseHealthResponse(BaseModel):
     camera_lens_position: Optional[float]
     golden_pose: str
     message: str
+    cita_profile: Optional[str] = None
+    cita_profile_hash: Optional[str] = None
 
 
 class PoseCorrectionResponse(BaseModel):
