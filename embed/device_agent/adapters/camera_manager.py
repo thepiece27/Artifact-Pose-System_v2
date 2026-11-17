@@ -225,6 +225,10 @@ class CameraManager:
                 except Exception:
                     pass
 
+    def manual_session(self, **kwargs: Any) -> "ManualCameraSession":
+        """Persistent camera with fixed focus/exposure/white balance (CITA)."""
+        return ManualCameraSession(self.output_dir, **kwargs)
+
     @staticmethod
     def _probe_autofocus_lens(
         picam2: Any,
@@ -264,3 +268,94 @@ class CameraManager:
                 result["awb_gains_runtime"] = [float(value[0]), float(value[1])]
 
         return result
+
+
+class ManualCameraSession:
+    """Camera kept open across frames with every automatic control disabled.
+
+    Used by ``embed/tools/capture_session.py`` (E0/E1/E3 data): manual focus at
+    a fixed ``LensPosition`` (default 1.5, the calibrated value), AE off, AWB
+    off with fixed ``ColourGains``, fixed ``ExposureTime``/``AnalogueGain``.
+    No autofocus probe is ever run (it would move the lens).
+    """
+
+    def __init__(
+        self,
+        output_dir: Path,
+        *,
+        width: int = DEFAULT_CAPTURE_WIDTH,
+        height: int = DEFAULT_CAPTURE_HEIGHT,
+        lens_position: float = 1.5,
+        exposure_time_us: int = 20000,
+        analogue_gain: float = 1.0,
+        colour_gains: Sequence[float] = (1.2, 1.5),
+        warmup_s: float = 2.0,
+        image_format: str = "png",
+    ) -> None:
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.width, self.height = int(width), int(height)
+        self.lens_position = float(lens_position)
+        self.exposure_time_us = int(exposure_time_us)
+        self.analogue_gain = float(analogue_gain)
+        self.colour_gains = (float(colour_gains[0]), float(colour_gains[1]))
+        self.warmup_s = float(warmup_s)
+        self.image_format = image_format.lower().lstrip(".")
+        self._picam2: Any = None
+
+    def __enter__(self) -> "ManualCameraSession":
+        picamera2_module = importlib.import_module("picamera2")
+        libcamera_module = importlib.import_module("libcamera")
+        controls = getattr(libcamera_module, "controls")
+        self._picam2 = getattr(picamera2_module, "Picamera2")()
+        config = self._picam2.create_still_configuration(
+            main={"size": (self.width, self.height), "format": "RGB888"},
+            controls={"AwbEnable": False, "AeEnable": False},
+        )
+        self._picam2.configure(config)
+        self._picam2.start()
+        self._picam2.set_controls({
+            "AfMode": controls.AfModeEnum.Manual,
+            "LensPosition": self.lens_position,
+            "AeEnable": False,
+            "AwbEnable": False,
+            "ExposureTime": self.exposure_time_us,
+            "AnalogueGain": self.analogue_gain,
+            "ColourGains": self.colour_gains,
+        })
+        time.sleep(max(0.0, self.warmup_s))
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        if self._picam2 is not None:
+            try:
+                self._picam2.stop()
+            finally:
+                self._picam2.close()
+                self._picam2 = None
+
+    def requested_controls(self) -> dict[str, Any]:
+        return {"LensPosition": self.lens_position, "ExposureTime": self.exposure_time_us,
+                "AnalogueGain": self.analogue_gain, "ColourGains": list(self.colour_gains),
+                "AeEnable": False, "AwbEnable": False, "AfMode": "Manual"}
+
+    def capture(self, basename: str) -> CaptureOutcome:
+        if self._picam2 is None:
+            raise RuntimeError("ManualCameraSession is not open (use 'with')")
+        image_path = self.output_dir / f"{basename}.{self.image_format}"
+        if image_path.exists():
+            raise FileExistsError(f"Refusing to overwrite {image_path}")
+        request = self._picam2.capture_request()
+        try:
+            request.save("main", str(image_path))
+            raw = request.get_metadata() or {}
+        finally:
+            request.release()
+        meta: dict[str, Any] = {}
+        for key in ("LensPosition", "ExposureTime", "AnalogueGain", "ColourGains",
+                    "SensorTimestamp", "Lux", "ColourTemperature", "FocusFoM"):
+            if key in raw:
+                value = raw[key]
+                meta[key] = list(value) if isinstance(value, (list, tuple)) else value
+        meta["requested"] = self.requested_controls()
+        return CaptureOutcome(image_path=image_path, metadata=meta)

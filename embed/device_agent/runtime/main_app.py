@@ -18,6 +18,7 @@ from typing import Any, Dict
 from api_client import APIClient, APIConfig
 from adapters.camera_manager import CameraManager
 from adapters.hardware_controller import HardwareController
+from adapters.motion_profile import MotionProfile
 
 # Note: Load env từ file .env nếu có.
 
@@ -561,9 +562,10 @@ class MainApp:
                 return {"status": "ok", "action": action}
 
             if action == "move":
-                self._handle_compound_move(command)
+                move_info = self._handle_compound_move(command) or {}
                 self._mark_processed_task(task_id)
-                return {"status": "ok", "action": action}
+                # Extra ack fields (I2) are ignored by older servers.
+                return {"status": "ok", "action": action, **move_info}
 
             if action == "capture":
                 self._handle_capture(command)
@@ -742,6 +744,10 @@ class MainApp:
         #   "rotation"    → chỉ chạy servo Pan/Tilt, stepper KHÔNG được gọi.
         # Nếu không có alignment_phase (lệnh thông thường) → chạy song song như cũ.
         alignment_phase = str(command.get("alignment_phase", "")).strip().lower()
+        # I2: motion profile from the command > env > legacy defaults.
+        profile = MotionProfile.resolve(command.get("motion_profile"))
+        if not profile.is_legacy:
+            print(f"[MOVE]  Motion profile (I2): {profile.to_dict()}")
 
         print(f"[MOVE] --- Bat dau lenh di chuyen ---")
         if alignment_phase:
@@ -766,11 +772,11 @@ class MainApp:
                 futures = []
                 if x_steps > 0:
                     futures.append(executor.submit(
-                        self._move_slider_x_with_profile, x_steps, 1 if x_dir >= 0 else -1
+                        self._move_slider_axis_i2, "x", x_steps, 1 if x_dir >= 0 else -1, profile
                     ))
                 if z_steps > 0:
                     futures.append(executor.submit(
-                        self._move_slider_z_with_profile, z_steps, 1 if z_dir >= 0 else -1
+                        self._move_slider_axis_i2, "z", z_steps, 1 if z_dir >= 0 else -1, profile
                     ))
                 for f in futures:
                     f.result()
@@ -780,7 +786,7 @@ class MainApp:
             # Stepper KHÔNG được gọi — giữ nguyên vị trí cơ khí.
             print(f"[MOVE]  [ROTATION ONLY] Stepper giu nguyen: X={x_steps_before} Z={z_steps_before} buoc")
             if abs(yaw_delta_applied) >= 0.05 or abs(pitch_delta_applied) >= 0.05:
-                self.hardware.set_pan_tilt(yaw_target, pitch_target)
+                self.hardware.approach_pan_tilt(yaw_target, pitch_target, profile)
             else:
                 print(f"[MOVE]  (Goc servo da trong dung sai, bo qua)")
 
@@ -793,12 +799,32 @@ class MainApp:
                 z_steps=z_steps,
                 x_dir=1 if x_dir >= 0 else -1,
                 z_dir=1 if z_dir >= 0 else -1,
+                profile=profile,
             )
 
+        # I2: wait for vibrations to die out before ack / capture.
+        if profile.settle_s > 0:
+            print(f"[MOVE]  Cho on dinh {profile.settle_s:.2f}s (settle_s)")
+            time.sleep(profile.settle_s)
+        if profile.servo_release_after_move:
+            self.hardware.release_servos()
+
         print(
-            f"[MOVE] Hoan thanh -> Servo: Yaw={self.hardware.current_yaw}° Pitch={self.hardware.current_pitch}° | "
+            f"[MOVE] Hoan thanh -> Servo: Yaw={self.hardware.current_yaw:.2f}° Pitch={self.hardware.current_pitch:.2f}° | "
             f"Slider (odo tu khoi dong): X={self.hardware.current_x_steps} Z={self.hardware.current_z_steps} buoc"
         )
+        move_info: Dict[str, Any] = {
+            "commanded": {
+                "yaw_deg": float(self.hardware.current_yaw),
+                "pitch_deg": float(self.hardware.current_pitch),
+                "x_steps_odometry": int(self.hardware.current_x_steps),
+                "z_steps_odometry": int(self.hardware.current_z_steps),
+                "x_steps": int(x_steps), "z_steps": int(z_steps),
+                "yaw_delta_applied": float(yaw_delta_applied),
+                "pitch_delta_applied": float(pitch_delta_applied),
+            },
+            "motion_profile": profile.to_dict(),
+        }
 
         capture_after_move = command.get("capture_after_move")
         should_capture_after_move = bool(capture_after_move)
@@ -811,6 +837,24 @@ class MainApp:
             capture_spec = capture_after_move if isinstance(capture_after_move, dict) else {}
             capture_command = self._build_capture_after_move_command(command, capture_spec)
             self._handle_capture(capture_command)
+        return move_info
+
+    def _move_slider_axis_i2(self, axis: str, steps: int, direction: int, profile: MotionProfile) -> None:
+        """Slider move; with I2 unidirectional approach the target is always
+        reached travelling in ``approach_sign`` (overshoot + come back)."""
+        move = self._move_slider_x_with_profile if axis == "x" else self._move_slider_z_with_profile
+        backlash = int(profile.backlash_steps)
+        if (steps <= 0 or not profile.unidirectional or backlash <= 0
+                or direction * profile.approach_sign > 0):
+            move(steps, direction)
+            return
+        overshoot = steps + backlash
+        if self._bounded_steps(axis, overshoot, direction) < overshoot:
+            print(f"[MOVE]  Slider {axis.upper()}: bo qua overshoot (vuot hanh trinh)")
+            move(steps, direction)
+            return
+        move(overshoot, direction)
+        move(backlash, -direction)
 
     @staticmethod
     def _safe_float(value: Any, default: float) -> float:
@@ -829,14 +873,16 @@ class MainApp:
         z_steps: int,
         x_dir: int,
         z_dir: int,
+        profile: MotionProfile | None = None,
     ) -> None:
+        profile = profile or MotionProfile()
         tasks = []
         with ThreadPoolExecutor(max_workers=3) as executor:
-            tasks.append(executor.submit(self.hardware.set_pan_tilt, yaw_target, pitch_target))
+            tasks.append(executor.submit(self.hardware.approach_pan_tilt, yaw_target, pitch_target, profile))
             if x_steps > 0:
-                tasks.append(executor.submit(self._move_slider_x_with_profile, x_steps, x_dir))
+                tasks.append(executor.submit(self._move_slider_axis_i2, "x", x_steps, x_dir, profile))
             if z_steps > 0:
-                tasks.append(executor.submit(self._move_slider_z_with_profile, z_steps, z_dir))
+                tasks.append(executor.submit(self._move_slider_axis_i2, "z", z_steps, z_dir, profile))
 
             for task in tasks:
                 task.result()
@@ -994,7 +1040,11 @@ class MainApp:
         # Neu la lan chup dau tien/retry tu server (khong phai auto-capture sau move noi bo),
         # dua servo ve home truoc de bat dau can chinh tu goc chuan nhat quan.
         is_internal_after_move = bool(command.get("_internal_after_move", False))
-        if not is_internal_after_move:
+        # keep_pose=true (CITA E2/E3): capture at the current pose, no homing.
+        keep_pose = bool(command.get("keep_pose", False))
+        if keep_pose and not is_internal_after_move:
+            print("[CAPTURE] keep_pose=true: giu nguyen tu the servo, khong ve home")
+        if not is_internal_after_move and not keep_pose:
             print(f"[CAPTURE] Dua servo ve home truoc khi bat dau capture (Yaw={self.hardware.HOME_YAW}° Pitch={self.hardware.HOME_PITCH}°)")
             self.hardware.go_home()
             time.sleep(0.5)  # Cho servo on dinh truoc khi chup

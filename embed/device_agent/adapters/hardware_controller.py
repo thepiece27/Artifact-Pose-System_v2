@@ -5,7 +5,12 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from threading import Event, Lock
-from typing import Optional
+from typing import Any, Optional
+
+try:  # package import (embed/tools, tests) or flat import (runtime/main_app.py)
+    from .motion_profile import MotionProfile, unidirectional_waypoints
+except ImportError:  # pragma: no cover
+    from adapters.motion_profile import MotionProfile, unidirectional_waypoints
 
 
 @dataclass
@@ -43,22 +48,44 @@ class HardwareController:
         self,
         servo_config: Optional[ServoConfig] = None,
         slider_config: Optional[SliderConfig] = None,
+        *,
+        kit: Any = None,
+        gpio: Any = None,
+        sleep=time.sleep,
     ) -> None:
+        """``kit``/``gpio`` inject drivers (tests, dry-run); default = real hardware."""
         self.servo_config = servo_config or ServoConfig()
         self.slider_config = slider_config or SliderConfig()
 
-        self.current_yaw: int = self.HOME_YAW
-        self.current_pitch: int = self.HOME_PITCH
+        # Float typed (I2); in legacy mode the stored values stay integral.
+        self.current_yaw: float = float(self.HOME_YAW)
+        self.current_pitch: float = float(self.HOME_PITCH)
         self.current_x_steps: int = 0
         self.current_z_steps: int = 0
         self._stop_event = Event()
         self._state_lock = Lock()
+        self._sleep = sleep
+        # History of physical servo commands (for logs / tests), bounded.
+        self.servo_command_log: list[tuple[float, float]] = []
 
-        self._kit = None
-        self._gpio = None
+        self._kit = kit
+        self._gpio = gpio
 
-        self._init_servo_driver()
-        self._init_stepper_driver()
+        if self._kit is None:
+            self._init_servo_driver()
+        if self._gpio is None:
+            self._init_stepper_driver()
+        else:
+            self._gpio.setmode(self._gpio.BCM)
+            self._gpio.setup(
+                [
+                    self.slider_config.x_pul_pin,
+                    self.slider_config.x_dir_pin,
+                    self.slider_config.z_pul_pin,
+                    self.slider_config.z_dir_pin,
+                ],
+                self._gpio.OUT,
+            )
 
         # Gui lenh vat ly ngay khi khoi dong de dong bo trang thai RAM voi phan cung.
         # Servo co the o bat ky vi tri nao sau khi Pi restart.
@@ -95,38 +122,78 @@ class HardwareController:
             print(f"[HW] Loi khoi tao GPIO stepper: {exc}")
             raise
 
-    def set_pan_tilt(self, yaw_deg: float, pitch_deg: float) -> None:
-        """Dat truc tiep goc Yaw/Pitch nhan duoc tu lenh."""
+    def set_pan_tilt(self, yaw_deg: float, pitch_deg: float, *, float_angles: bool = False) -> None:
+        """Dat truc tiep goc Yaw/Pitch nhan duoc tu lenh.
+
+        ``float_angles=False`` (mac dinh, hanh vi cu): lam tron ve so nguyen.
+        ``float_angles=True`` (I2): giu goc so thuc, PCA9685 nhan float.
+        """
         if self._kit is None:
             raise RuntimeError("PCA9685 chua duoc khoi tao")
 
         try:
-            pan_target = int(round(yaw_deg))
-            pan_target = max(self.servo_config.pan_min, min(self.servo_config.pan_max, pan_target))
-            tilt_target = int(round(pitch_deg))
-            tilt_target = max(self.servo_config.tilt_min, min(self.servo_config.tilt_max, tilt_target))
+            if float_angles:
+                requested_pan, requested_tilt = float(yaw_deg), float(pitch_deg)
+            else:
+                requested_pan, requested_tilt = int(round(yaw_deg)), int(round(pitch_deg))
+            pan_target = max(self.servo_config.pan_min, min(self.servo_config.pan_max, requested_pan))
+            tilt_target = max(self.servo_config.tilt_min, min(self.servo_config.tilt_max, requested_tilt))
 
-            pan_clamped  = pan_target  != int(round(yaw_deg))
-            tilt_clamped = tilt_target != int(round(pitch_deg))
             clamp_note = ""
-            if pan_clamped:
-                clamp_note += f" [Pan clamp: yeu cau {int(round(yaw_deg))}°]"
-            if tilt_clamped:
-                clamp_note += f" [Tilt clamp: yeu cau {int(round(pitch_deg))}°]"
+            if pan_target != requested_pan:
+                clamp_note += f" [Pan clamp: yeu cau {requested_pan:.2f}°]"
+            if tilt_target != requested_tilt:
+                clamp_note += f" [Tilt clamp: yeu cau {requested_tilt:.2f}°]"
 
             print(
-                f"[SERVO] Pan : {self.current_yaw:>3}° -> {pan_target:>3}°  |"
-                f"  Tilt: {self.current_pitch:>3}° -> {tilt_target:>3}°"
+                f"[SERVO] Pan : {self.current_yaw:6.2f}° -> {pan_target:6.2f}°  |"
+                f"  Tilt: {self.current_pitch:6.2f}° -> {tilt_target:6.2f}°"
                 + clamp_note
             )
 
             self._kit.servo[self.servo_config.pan_channel].angle = pan_target
             self._kit.servo[self.servo_config.tilt_channel].angle = tilt_target
             with self._state_lock:
-                self.current_yaw = pan_target
-                self.current_pitch = tilt_target
+                self.current_yaw = float(pan_target)
+                self.current_pitch = float(tilt_target)
+                self.servo_command_log.append((float(pan_target), float(tilt_target)))
+                del self.servo_command_log[:-256]
         except Exception as exc:
             raise RuntimeError(f"Loi dieu khien servo: {exc}") from exc
+
+    def approach_pan_tilt(self, yaw_deg: float, pitch_deg: float, profile: Optional[MotionProfile] = None) -> list:
+        """I2: set servos, approaching each target from the same side.
+
+        With the legacy profile this is exactly ``set_pan_tilt`` (one command).
+        Returns the list of (yaw, pitch) waypoints commanded.
+        """
+        profile = (profile or MotionProfile()).sanitized()
+        yaw_wp = unidirectional_waypoints(
+            self.current_yaw, float(yaw_deg), enabled=profile.unidirectional,
+            approach_sign=profile.approach_sign, backlash=profile.backlash_deg,
+            lower=self.servo_config.pan_min, upper=self.servo_config.pan_max)
+        pitch_wp = unidirectional_waypoints(
+            self.current_pitch, float(pitch_deg), enabled=profile.unidirectional,
+            approach_sign=profile.approach_sign, backlash=profile.backlash_deg,
+            lower=self.servo_config.tilt_min, upper=self.servo_config.tilt_max)
+        waypoints = []
+        if len(yaw_wp) > 1 or len(pitch_wp) > 1:
+            waypoints.append((yaw_wp[0], pitch_wp[0]))
+        waypoints.append((float(yaw_deg), float(pitch_deg)))
+        for i, (y, p) in enumerate(waypoints):
+            self.set_pan_tilt(y, p, float_angles=profile.float_angles)
+            if i + 1 < len(waypoints):
+                # Short pause so the overshoot is actually reached.
+                self._sleep(max(0.15, min(0.5, profile.settle_s)))
+        return waypoints
+
+    def release_servos(self) -> None:
+        """Ngat PWM (angle=None): servo khong giu momen, het rung/run."""
+        if self._kit is None:
+            return
+        self._kit.servo[self.servo_config.pan_channel].angle = None
+        self._kit.servo[self.servo_config.tilt_channel].angle = None
+        print("[SERVO] Da ngat PWM (servo_release_after_move)")
 
     def move_slider_x(self, steps: int, direction: int) -> None:
         """Tinh tien slider truc X voi so buoc cho truoc."""
@@ -244,6 +311,6 @@ class HardwareController:
             if self._stop_event.is_set():
                 raise RuntimeError("Emergency stop active")
             self._gpio.output(pul_pin, self._gpio.HIGH)
-            time.sleep(effective_pulse_delay)
+            self._sleep(effective_pulse_delay)
             self._gpio.output(pul_pin, self._gpio.LOW)
-            time.sleep(effective_pulse_delay)
+            self._sleep(effective_pulse_delay)
