@@ -259,10 +259,13 @@ class EccSection:
     levels: int = 3
     max_iter: int = 100
     eps: float = 1e-6
+    max_side_px: int = 2000     # ECC runs at most at this long side (speed at 4K)
 
     def __post_init__(self):
         if not 1 <= self.levels <= 5:
             raise ProfileError("inspection.ecc.levels must be in [1, 5]")
+        if self.max_side_px < 256:
+            raise ProfileError("inspection.ecc.max_side_px must be >= 256")
 
 
 @dataclass(frozen=True)

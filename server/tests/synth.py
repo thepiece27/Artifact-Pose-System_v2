@@ -386,9 +386,25 @@ DEFAULT_DAMAGES = [
 ]
 
 
+def add_distractors(scene: SynthScene, tex: np.ndarray, rng: np.random.Generator, n: int = 2) -> np.ndarray:
+    """Objects moved on the wall OUTSIDE the painting (notes, a cable): real
+    scene changes that are not damage to the artifact."""
+    tex = tex.copy()
+    x0, y0, x1, y1 = scene.painting_rect_m
+    for _ in range(n):
+        cx = rng.uniform(-0.15, 0.20)
+        cy = rng.uniform(y0 - 0.10, y0 - 0.035)          # band below the painting
+        w, h = rng.uniform(0.02, 0.045), rng.uniform(0.015, 0.035)
+        p = scene.plane_to_texture_px([(cx - w / 2, cy + h / 2), (cx + w / 2, cy - h / 2)]).astype(int)
+        colour = tuple(int(c) for c in rng.integers(30, 230, 3))
+        cv2.rectangle(tex, tuple(p[0]), tuple(p[1]), colour, -1)
+    return tex
+
+
 def make_change_pairs(root: Path, *, seed: int = 0, split: str = "test", n_unchanged: int = 3,
                       n_changed: int = 3, session_id: str | None = None, width: int = 960,
-                      damages: list[Damage] | None = None, supersample: int = 3) -> Path:
+                      damages: list[Damage] | None = None, supersample: int = 3,
+                      distractors: bool = True) -> Path:
     """E3-style pairs (golden vs current) with GT boxes in golden image coords."""
     scene = make_scene(seed, width=width)
     rng = np.random.default_rng(seed + 7)
@@ -408,6 +424,8 @@ def make_change_pairs(root: Path, *, seed: int = 0, split: str = "test", n_uncha
         rot = rng.uniform(-1, 1, 3) * np.array([0.4, 0.4, 0.2])
         T_c = scene.pose_from_motion(off, rot)
         tex = scene.damaged_texture(damages) if changed else None
+        if distractors:
+            tex = add_distractors(scene, scene.texture if tex is None else tex, rng)
         img = scene.render(T_c, noise_sigma=1.5, gain=float(rng.uniform(0.92, 1.08)),
                            offset=float(rng.uniform(-6, 6)), rng=rng, texture=tex, supersample=supersample)
         name = f"cur_{i:03d}.png"
