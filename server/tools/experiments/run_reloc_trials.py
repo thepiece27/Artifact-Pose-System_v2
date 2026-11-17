@@ -203,6 +203,7 @@ def main(argv=None) -> int:
     add_common_args(p)
     args = p.parse_args(argv)
     base, seed, rng = setup(args)
+    args.seed = seed            # resolved (CLI or profile seed); used for rig seeds
     log = make_logger("E2", args, base)
     results = run_virtual(args, base, log, rng) if args.virtual else run_real(args, base, log, rng)
     by_arm: dict = {}
