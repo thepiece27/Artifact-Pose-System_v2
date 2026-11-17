@@ -18,6 +18,12 @@ class MockModelService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, int]] = []
 
+    def readiness(self) -> dict:
+        return {"loaded": True, "models": [{"name": "default", "backend": "mock", "path": None, "loaded_at": None}]}
+
+    def list_models(self) -> list:
+        return []
+
     def detect_image(self, name: str, image_bytes: bytes):
         img = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
         h, w = img.shape[:2]

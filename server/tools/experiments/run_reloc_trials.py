@@ -110,7 +110,7 @@ class Api:
 
     @classmethod
     def login(cls, base: str, username: str, password: str) -> "Api":
-        tok = cls(base, None).call("POST", "/login", {"username": username, "password": password})["access_token"]
+        tok = cls(base, None).call("POST", "/api/v1/auth/login", {"username": username, "password": password})["access_token"]
         return cls(base, tok)
 
 

@@ -487,7 +487,11 @@ def load_raw(name_or_path: str | Path, profile_dir: Path = PROFILE_DIR) -> tuple
     seen = {path}
     merged_layers = [data]
     while "extends" in merged_layers[-1] and merged_layers[-1]["extends"]:
-        parent = _resolve_file(str(merged_layers[-1]["extends"]), path.parent)
+        name = str(merged_layers[-1]["extends"])
+        try:  # sibling file first (custom profiles), then the shipped profiles
+            parent = _resolve_file(name, chain[-1].parent)
+        except ProfileError:
+            parent = _resolve_file(name, profile_dir)
         if parent in seen:
             raise ProfileError(f"Cyclic 'extends' involving {parent.name}")
         seen.add(parent)
