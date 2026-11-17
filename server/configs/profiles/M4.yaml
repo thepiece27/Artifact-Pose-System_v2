@@ -1,0 +1,7 @@
+name: M4
+extends: M3
+description: "Hybrid, noise-matched weights from E0.2/E0.3 (configs/noise_model.yaml) + covariance (I1)"
+pose:
+  method: M4
+  noise_model: configs/noise_model.yaml   # missing file -> explicit error
+  covariance: true

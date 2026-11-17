@@ -1,0 +1,6 @@
+name: P4
+extends: P0
+description: "YOLO only on the current image (no reference)"
+inspection:
+  pipeline: P4
+  yolo: true

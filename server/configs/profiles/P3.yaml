@@ -1,0 +1,6 @@
+name: P3
+extends: P2
+description: "P2 + existing two-phase YOLO on the AIInputPackage (proposed)"
+inspection:
+  pipeline: P3
+  yolo: true

@@ -1,0 +1,6 @@
+name: M1
+extends: pbl_legacy
+description: "Diamond only: IPPE_SQUARE + ambiguity check, no refinement"
+pose:
+  method: M1
+  backend: python

@@ -1,0 +1,5 @@
+name: P0
+extends: pbl_legacy
+description: "PBL inspection: whole-frame SIFT + SSIM (gray .6 / colour .4) + Otsu + YOLO crops; legacy crop-coordinate bug kept on purpose"
+inspection:
+  pipeline: P0

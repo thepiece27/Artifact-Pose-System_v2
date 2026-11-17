@@ -1,0 +1,9 @@
+name: M3
+extends: pbl_legacy
+description: "Hybrid Diamond+ORB, PBL weights: Omega_d = 1e4 I (sigma_d 0.01 px), Omega_o = I (sigma_o 1 px), Huber 2"
+pose:
+  method: M3
+  diamond_sigma_px: 0.01
+  orb_sigma_px: 1.0
+  huber_delta: 2.0
+  backend: python           # scipy is the reference backend for experiments

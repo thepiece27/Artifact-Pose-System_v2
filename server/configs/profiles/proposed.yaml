@@ -1,0 +1,35 @@
+# Full proposal = M5 pose + C-D controller + I2 motion profile + P3 inspection.
+name: proposed
+extends: pbl_legacy
+description: "Proposed method: M5 + I2 + Jacobian control (C-D) + P3 inspection"
+pose:
+  method: M5
+  diamond_sigma_px: 0.01      # replaced by configs/noise_model.yaml (required)
+  orb_sigma_px: 1.0
+  huber_delta: 2.0
+  backend: python
+  noise_model: configs/noise_model.yaml
+  frames: 3
+  fusion: stacked
+  covariance: true
+  orb_region: full
+control:
+  controller: jacobian
+  max_iterations: 10
+  tol_translation_mm: 10.0   # placeholder: team fixes tau after E0.4/E3 (same value in all C-* files)
+  tol_rotation_deg: 1.0
+  probe: {scheme: chained_forward, delta: {x_mm: 5, z_mm: 5, yaw_deg: 2, pitch_deg: 2}, ttl_s: 3600}
+  gain: 0.8
+  broyden: {enabled: false, beta: 0.5}
+  stop: {uncertainty_aware: false, k_sigma: 2.0}
+motion_profile: {float_angles: true, settle_s: 1.0, unidirectional: true, approach_sign: 1, backlash_deg: 2.0, backlash_steps: 0, servo_release_after_move: false}
+inspection:
+  pipeline: P3
+  registration: roi_homography
+  ecc: {enabled: true, levels: 3, max_iter: 100, eps: 1.0e-6}
+  photometric: gain_offset
+  ssim: {mode: standard, work_long_side_px: 2000, channels: gray_color}
+  threshold: {mode: fixed, file: configs/thresholds.yaml}
+  min_area_mm2: 4.0
+  crop_source: aligned
+  yolo: true

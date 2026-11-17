@@ -1,0 +1,5 @@
+name: M2-full
+extends: M2
+description: "M2 at full resolution"
+pose:
+  resize_to: null

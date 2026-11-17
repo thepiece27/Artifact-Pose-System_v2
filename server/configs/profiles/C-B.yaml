@@ -1,0 +1,9 @@
+name: C-B
+extends: M5
+description: "Pose M5 + I2 (device motion profile) + fixed mapping"
+control:
+  controller: fixed_mapping
+  max_iterations: 10
+  tol_translation_mm: 10.0   # placeholder: team fixes tau after E0.4/E3 (same value in all C-* files)
+  tol_rotation_deg: 1.0
+motion_profile: {float_angles: true, settle_s: 1.0, unidirectional: true, approach_sign: 1, backlash_deg: 2.0, backlash_steps: 0, servo_release_after_move: false}

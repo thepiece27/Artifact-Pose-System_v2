@@ -1,0 +1,30 @@
+# Behaviour of the code at tag cita-baseline (eaed45e). Selecting this profile
+# (or no profile at all) must not change anything the server/app/device does.
+# NOTE: the sigmas below are the values hard-coded in geometry.QualityConfig at
+# cita-baseline (0.5 / 1.5 px), NOT the PBL report weights (Omega_d = 1e4 I,
+# Omega_o = I). Those PBL weights are branch M3 (see M3.yaml).
+name: pbl_legacy
+description: "cita-baseline behaviour (default when CITA_PROFILE is unset)"
+seed: 2027
+pose:
+  method: legacy            # = correction.run_correction_step as before
+  diamond_sigma_px: 0.5
+  orb_sigma_px: 1.5
+  huber_delta: 2.0
+  backend: auto             # g2o if the native module is built, else scipy
+  orb_region: full
+golden:
+  stereo_source: diamond    # T_right_left estimated from the Diamond (as before)
+  baseline_mm: 100.0
+control:
+  controller: fixed_mapping # tolerances / iterations / signs come from Settings
+  max_iterations: null
+  tol_translation_mm: null
+  tol_rotation_deg: null
+  signs: null
+motion_profile: {}          # empty = nothing sent, old device behaviour
+inspection:
+  pipeline: P0
+logging:
+  enabled: true
+  root: logs/experiments

@@ -1,0 +1,13 @@
+name: P2
+extends: P0
+description: "P1 + ROI homography + ECC + photometric normalisation + standard SSIM + fixed threshold (chosen on validation)"
+inspection:
+  pipeline: P2
+  registration: roi_homography
+  ecc: {enabled: true, levels: 3, max_iter: 100, eps: 1.0e-6}
+  photometric: gain_offset
+  ssim: {mode: standard, work_long_side_px: 2000, channels: gray_color}
+  threshold: {mode: fixed, file: configs/thresholds.yaml}
+  min_area_mm2: 4.0
+  crop_source: aligned
+  yolo: false

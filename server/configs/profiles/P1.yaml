@@ -1,0 +1,10 @@
+name: P1
+extends: P0
+description: "P0 + painting ROI mask; YOLO crops from the aligned image (coordinate fix)"
+inspection:
+  pipeline: P1
+  registration: legacy_whole_frame
+  ssim: {mode: legacy}
+  threshold: {mode: otsu_legacy}
+  crop_source: aligned
+  yolo: true

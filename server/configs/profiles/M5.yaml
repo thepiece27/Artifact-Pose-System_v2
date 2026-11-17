@@ -1,0 +1,7 @@
+name: M5
+extends: M4
+description: "M4 + fusion of 3 static frames (stacked residuals in one pose-only problem)"
+pose:
+  method: M5
+  frames: 3
+  fusion: stacked

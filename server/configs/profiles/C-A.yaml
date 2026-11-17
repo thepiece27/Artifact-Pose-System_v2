@@ -1,0 +1,9 @@
+name: C-A
+extends: M3
+description: "Pose M3 + fixed mapping (PBL controller)"
+control:
+  controller: fixed_mapping
+  max_iterations: 10
+  tol_translation_mm: 10.0   # placeholder: team fixes tau after E0.4/E3 (same value in all C-* files)
+  tol_rotation_deg: 1.0
+motion_profile: {}

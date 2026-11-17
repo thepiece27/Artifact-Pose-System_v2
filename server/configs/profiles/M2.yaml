@@ -1,0 +1,15 @@
+name: M2
+extends: pbl_legacy
+description: "Markerless (Hung et al. 2025): ORB+QuadTree, ratio 0.6, commanded 100 mm stereo, EPnP + ORB-only pose refinement, 848x480"
+pose:
+  method: M2
+  backend: python
+  ratio: 0.6
+  orb_sigma_px: 1.0
+  huber_delta: 2.0
+  resize_to: [848, 480]
+  min_pnp_inliers: 6        # rejects <= 5 inliers as in the original paper
+golden:
+  stereo_source: commanded
+  baseline_mm: 100.0
+  build_markerless: true
