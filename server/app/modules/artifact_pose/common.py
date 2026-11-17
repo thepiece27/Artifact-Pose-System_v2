@@ -112,20 +112,32 @@ def detect_diamond(image, K, D, quality=DEFAULT_QUALITY, expected_ids=DIAMOND_ID
             "ambiguous": pose_is_ambiguous(candidates, quality)}
 
 
-def extract_orb(image, max_features=5000, min_node_size=64, max_depth=7, backend="auto", features_per_leaf=4):
+def extract_orb(image, max_features=5000, min_node_size=64, max_depth=7, backend="auto", features_per_leaf=4,
+                mask=None):
+    """ORB + QuadTree. ``mask`` (uint8, 255 = usable) is optional (CITA: it
+    removes the reference-board region); ``None`` keeps the original path."""
     image = validate_image(image)
     native = resolve_backend(backend)
     if min(max_features, min_node_size, max_depth, features_per_leaf) <= 0 or max_depth > 16:
         raise ValueError("Invalid ORB/QuadTree limits")
+    if mask is not None:
+        mask = np.asarray(mask)
+        if mask.dtype != np.uint8 or mask.shape[:2] != image.shape[:2]:
+            raise ValueError("mask must be uint8 with the image height/width")
     if native is not None:
         out = native.extract_with_quadtree(image, max_features, min_node_size, max_depth, features_per_leaf)
         kp = [cv2.KeyPoint(x=k["x"], y=k["y"], size=k["size"], angle=k["angle"],
                           response=k["response"], octave=k["octave"]) for k in out["keypoints"]]
         desc = descriptors(out["descriptors"])
+        if mask is not None and len(kp):
+            h, w = mask.shape[:2]
+            keep = [i for i, k in enumerate(kp)
+                    if mask[min(h - 1, max(0, int(round(k.pt[1])))), min(w - 1, max(0, int(round(k.pt[0]))))] > 0]
+            kp, desc = [kp[i] for i in keep], np.ascontiguousarray(desc[keep])
     else:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
         orb = cv2.ORB_create(nfeatures=max_features, WTA_K=2)
-        detected = list(orb.detect(gray, None))
+        detected = list(orb.detect(gray, mask))
         def split(items, x, y, w, height, depth):
             if not items:
                 return []

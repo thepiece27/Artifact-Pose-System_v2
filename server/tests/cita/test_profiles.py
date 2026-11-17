@@ -102,5 +102,9 @@ def test_registry_covers_all_arms():
     import importlib.util
     for e in registry.arms():
         assert P.load_profile(e.default_profile)
-        if importlib.util.find_spec(e.target.partition(":")[0]) is not None:
+        try:
+            present = importlib.util.find_spec(e.target.partition(":")[0]) is not None
+        except ModuleNotFoundError:
+            present = False
+        if present:
             assert callable(e.resolve())
