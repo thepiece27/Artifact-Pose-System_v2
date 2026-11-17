@@ -346,6 +346,15 @@ def cmd_grid(args, rig: Rig, cam, writer: SessionWriter) -> None:
     for rep in range(args.golden_frames):
         writer.add(cam, pose_label="g", rep=rep, rig=rig, role="golden",
                    extra={"pose_index": -1, "target": _axis_target("x", 0.0), "settle_s": rig.profile.settle_s})
+    if args.with_stereo:
+        # Golden stereo pair in the same session (needed by replay_pose / M2).
+        rig.goto(x_mm=args.baseline_mm)
+        rig.settle()
+        writer.add(cam, pose_label="g", rep=args.golden_frames, rig=rig, role="stereo_right",
+                   extra={"pose_index": -1, "target": _axis_target("x", args.baseline_mm),
+                          "commanded_baseline_mm": args.baseline_mm, "settle_s": rig.profile.settle_s})
+        rig.goto()
+        rig.settle()
     for pose_index in order:
         x, z, pan, tilt = combos[pose_index]
         target = {"x_mm": x, "z_mm": z, "pan_deg": pan, "tilt_deg": tilt}
@@ -433,6 +442,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--frames", type=int, default=3)
     g.add_argument("--golden-frames", type=int, default=3)
     g.add_argument("--return-home", action="store_true")
+    g.add_argument("--with-stereo", action="store_true", help="also capture the golden stereo-right frame")
+    g.add_argument("--baseline-mm", type=float, default=100.0)
     st = sub.add_parser("stereo")
     st.add_argument("--baseline-mm", type=float, default=100.0)
     return p

@@ -9,13 +9,14 @@ the synthetic fixture calibration, no MQTT broker and a MOCK YOLO; registers a
 user, then calls GET /pose/health, initialises a golden from the fixture
 stereo pair, corrects one image, uploads a reference and an inspection image.
 Every value read from server/.env is overridden by explicit throw-away values
-for the keys used here; nothing secret is printed.
+for the keys used here (random per-run values); nothing is printed.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import secrets
 import sys
 import tempfile
 from pathlib import Path
@@ -29,6 +30,7 @@ def main(argv=None) -> int:
     p.add_argument("--profile", default="pbl_legacy")
     args = p.parse_args(argv)
     tmp = Path(tempfile.mkdtemp(prefix="cita_smoke_"))
+    smoke_pw = secrets.token_urlsafe(16)          # random per run, never stored
     profile = args.profile
     if profile == "proposed":
         # Test-only noise model / threshold (real ones come from E0 / validation).
@@ -42,9 +44,9 @@ def main(argv=None) -> int:
         "CITA_PROFILE": profile, "AUTH_DATABASE_URL": f"sqlite:///{(tmp / 'smoke.db').as_posix()}",
         "DATA_DIR": str(tmp / "data"), "MODEL_DIR": str(tmp / "model"), "ENVIRONMENT": "development",
         "ARTIFACT_CAMERA_PARAMS": str(FIX / "calibration.yaml"), "MQTT_HOST": "127.0.0.1", "MQTT_PORT": "1",
-        "AUTH_SECRET_KEY": "smoke-test-secret-key-not-used-anywhere-else-0123456789",
+        "AUTH_SECRET_KEY": secrets.token_hex(32),
         "ALLOW_PUBLIC_REGISTRATION": "true", "RUN_AI_ON_UPLOAD": "false", "AUTO_DISPATCH_POSE_COMMAND": "false",
-        "DEVICE_API_KEY": "smoke-device-key", "MQTT_USERNAME": "", "MQTT_PASSWORD": "",
+        "DEVICE_API_KEY": secrets.token_hex(16), "MQTT_USERNAME": "", "MQTT_PASSWORD": "",
     })
     sys.path.insert(0, str(SERVER))
     sys.path.insert(0, str(SERVER / "tests" / "cita"))
@@ -106,9 +108,9 @@ def main(argv=None) -> int:
             time.sleep(0.2)
     results = {}
     try:
-        st, _ = call("POST", "/api/v1/auth/register", json_body={"username": "smoke_user", "password": "smoke-pass-123"})
+        st, _ = call("POST", "/api/v1/auth/register", json_body={"username": "smoke_user", "password": smoke_pw})
         assert st in (201, 400), st
-        st, body = call("POST", "/api/v1/auth/login", json_body={"username": "smoke_user", "password": "smoke-pass-123"})
+        st, body = call("POST", "/api/v1/auth/login", json_body={"username": "smoke_user", "password": smoke_pw})
         assert st == 200, body
         tok = body["access_token"]
         st, body = call("GET", "/pose/health", token=tok)

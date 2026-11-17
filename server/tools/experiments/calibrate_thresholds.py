@@ -114,10 +114,16 @@ def main(argv=None) -> int:
     if not candidates:
         raise SystemExit("No tau reaches the target false-alarm rate on validation")
     best = max(candidates, key=lambda c: ((c["val_region_recall"] or 0.0), c["min_area_mm2"] or 0.0, -c["tau"]))
+    warning = None
+    if len(unchanged) < int(np.ceil(1.0 / max(args.target_far, 1e-9))):
+        warning = (f"only {len(unchanged)} unchanged validation pairs: a false-alarm target of "
+                   f"{args.target_far:.0%} cannot be resolved (needs >= {int(np.ceil(1 / args.target_far))}); "
+                   "tau is optimistic, collect more unchanged validation pairs")
+        print(f"WARNING: {warning}", file=sys.stderr)
     data = {"schema": "cita.thresholds.v1", "pipeline": args.pipeline, "tau": best["tau"],
             "min_area_mm2": best["min_area_mm2"], "target_far": args.target_far, "achieved_far_val": best["far"],
             "val_region_recall": best["val_region_recall"], "n_unchanged_val": len(unchanged),
-            "n_changed_val": len(changed), "candidates": candidates,
+            "n_changed_val": len(changed), "candidates": candidates, "warning": warning,
             "sources": [{"pairs": s.session_id, "split": s.split} for s in sets],
             "data_sha256": hashlib.sha256("".join(sorted(h for m in maps for h in m["sha256"])).encode()).hexdigest(),
             "profile_hash": prof.profile_hash, "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),

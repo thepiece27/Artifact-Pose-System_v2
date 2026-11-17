@@ -176,10 +176,12 @@ def test_capture_session_dry_run_manifests(tmp_path):
     from app.experiments.session import load_session
     args = ["--out", str(tmp_path), "--exp", "E1", "--session-id", "G", "--dry-run",
             "--unidirectional", "--backlash-deg", "1", "--float-angles",
-            "grid", "--x", "-5,0,5", "--z", "0", "--pan", "-1,0", "--frames", "2", "--golden-frames", "2"]
+            "grid", "--x", "-5,0,5", "--z", "0", "--pan", "-1,0", "--frames", "2", "--golden-frames", "2",
+            "--with-stereo"]
     assert capture_session.main(args) == 0
     s = load_session(tmp_path / "E1" / "G", verify=True)
     assert len(s.golden_frames()) == 2 and len(s.evaluation_frames()) == 12
+    assert s.stereo_right().get("odometry")["x_steps"] == 80000
     targets = {json.dumps(f.get("target"), sort_keys=True) for f in s.evaluation_frames()}
     assert len(targets) == 6
     m = s.manifest
