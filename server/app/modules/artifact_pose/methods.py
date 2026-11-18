@@ -253,6 +253,23 @@ def build_hybrid_golden(left, right, K, D, output: str | Path, *, stereo_source:
                 best = (T_try, tri_try)
         T, tri = best
         source = "commanded_slider_baseline"
+    elif stereo_source == "commanded_epipolar":
+        # R6: R = I (servos still), direction from the pure-translation epipolar
+        # constraint on the ORB matches, length = commanded baseline.
+        from .stereo_direction import (axis_angle_deg, diamond_stereo_transform, estimate_translation_direction,
+                                       normalized_rays, transform_with_cheirality)
+        x1, x2 = normalized_rays(kl[il], K, D), normalized_rays(kr[ir], K, D)
+        est = estimate_translation_direction(x1, x2, focal_px=float((K[0, 0] + K[1, 1]) / 2),
+                                             max_epipolar_px=quality.max_epipolar_px)
+        T, tri = transform_with_cheirality(est["t_dir"], baseline_m, kl[il], kr[ir], K, D, quality)
+        source = "commanded_baseline_epipolar_direction"
+        T_d = diamond_stereo_transform(diamond, right, K, D, quality, native)
+        epipolar_meta = {
+            "epipolar_inliers": est["n_inliers"], "epipolar_matches": est["n_matches"],
+            "epipolar_rms_px": est["rms_epipolar_px"],
+            "angle_to_camera_x_deg": axis_angle_deg(T[:3, 3], [1.0, 0.0, 0.0]),
+            "angle_to_diamond_deg": None if T_d is None else axis_angle_deg(T[:3, 3], T_d[:3, 3]),
+            "diamond_baseline_mm": None if T_d is None else float(np.linalg.norm(T_d[:3, 3]) * 1000)}
     else:
         raise ValueError(f"Unknown stereo_source {stereo_source}")
     if tri["num_valid"] < quality.min_orb_inliers:
@@ -261,7 +278,10 @@ def build_hybrid_golden(left, right, K, D, output: str | Path, *, stereo_source:
     xyz = transform_points(invert_pose(T_left_world), tri["points_3d"][valid])
     xy, desc = kl[il][valid], dl[il][valid]
     stereo_meta = {"source": source, "T_right_left": T.tolist(), "baseline_m": float(np.linalg.norm(T[:3, 3])),
-                   "matched": len(matches), "accepted": len(xyz), "commanded_baseline_m": baseline_m}
+                   "matched": len(matches), "accepted": len(xyz), "commanded_baseline_m": baseline_m,
+                   "stereo_source": stereo_source}
+    if stereo_source == "commanded_epipolar":
+        stereo_meta.update(epipolar_meta)
     save_golden_pose(output, diamond, xyz, xy, desc, (left.shape[1], left.shape[0]), K=K, D=D,
                      strategy="hybrid", stereo=stereo_meta, min_orb_inliers=quality.min_orb_inliers)
     return load_golden_pose(output, K=K, D=D, image_size=(left.shape[1], left.shape[0]))

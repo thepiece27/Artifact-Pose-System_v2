@@ -323,7 +323,7 @@ def write_calibration(path: Path, scene: SynthScene) -> Path:
 def make_pose_session(root: Path, *, seed: int = 0, session_id: str = "E1_SYNTH",
                       offsets: list[dict] | None = None, frames_per_pose: int = 3,
                       noise_sigma: float = 1.0, width: int = 960, painting_id: str = "SYN001",
-                      supersample: int = 3) -> Path:
+                      supersample: int = 3, stereo_direction=(1.0, 0.0, 0.0)) -> Path:
     """E1-style session: golden + stereo right + a grid of perturbed views.
 
     Ground truth of every frame is written to ``truth.json`` next to the
@@ -351,7 +351,8 @@ def make_pose_session(root: Path, *, seed: int = 0, session_id: str = "E1_SYNTH"
     base = {"target": None, "odometry": None, "offset_mm": None, "offset_deg": None, "stage": None,
             "settle_s": 0.0, "t_capture": None, "camera_metadata": {}}
     add("f00000_g_0", scene.T_gw(), {**base, "pose_index": -1, "rep": 0, "role": "golden"})
-    add("f00001_g_right", scene.pose_from_motion([0.100, 0.0, 0.0]),
+    sdir = np.asarray(stereo_direction, float) / np.linalg.norm(stereo_direction)
+    add("f00001_g_right", scene.pose_from_motion(0.100 * sdir),
         {**base, "pose_index": -1, "rep": 0, "role": "stereo_right"})
     idx = 2
     for pose_index, off in enumerate(offsets):

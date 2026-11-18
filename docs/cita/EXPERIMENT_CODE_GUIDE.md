@@ -117,6 +117,38 @@ Kết quả:
 
 Muốn ghi đè file `noise_model.yaml` đã có thì phải thêm `--force`; bản cũ được giữ lại thành `.bak`.
 
+### E0.3b – Chọn nguồn baseline cho golden (R6)
+
+Chạy trên chính các phiên E0.3 (có stereo), **trước khi đánh giá E1**:
+
+```bash
+python tools/experiments/e0_stereo_check.py --sessions data/sessions/E0.3/E0.3_P000_*
+# -> results/E0/stereo_check.json + quy tắc + nguồn được khuyến nghị
+```
+
+Báo cáo theo từng phiên:
+* baseline ước lượng từ Diamond so với 100 mm ra lệnh (mm, %);
+* góc giữa ba hướng: Diamond, epipolar (ORB, thuần tịnh tiến), trục x camera;
+* số inlier epipolar.
+
+**Quy tắc quyết định:**
+* Nếu trung vị |baseline Diamond − 100 mm| > 2 mm **hoặc** trung vị góc (Diamond, epipolar) > 1° thì `proposed`, `M4`, `M5` dùng `golden.stereo_source: commanded_epipolar`.
+* Ngược lại giữ `diamond`.
+* Ghi quyết định (kèm số liệu) vào `CHANGELOG_CITA.md` **trước** khi chạy eval E1. Sau đó tạo noise model với đúng nguồn đó: `e0_noise.py --stereo-source <nguồn>`.
+
+`commanded_epipolar`:
+* R = I, vì giữa hai ảnh golden servo đứng yên.
+* Hướng t̂ ước lượng bằng RANSAC 2 điểm trên ràng buộc t·(x₁ × x₂) = 0, tinh chỉnh bằng SVD trên inlier; dấu chọn theo cheirality.
+* Độ dài = baseline ra lệnh.
+
+Trên dữ liệu tổng hợp với slider lệch 5° so với trục x camera:
+
+| Nguồn | Sai hướng | M4 e_t trung vị |
+|---|---|---|
+| `commanded_epipolar` | 0,27° | 0,81 mm |
+| `commanded` | 5° | 2,39 mm |
+| `diamond` | 3,45° (baseline 92,3 mm) | 2,07 mm |
+
 ### E0.4 – Thời gian chờ hết rung t_s, độ lặp lại, rơ, độ phân giải servo
 
 ```bash
@@ -169,8 +201,15 @@ Thứ tự duyệt lưới được xáo theo seed và ghi trong `manifest.grid.
 ```bash
 python tools/experiments/replay_pose.py --session data/sessions/E1/E1_P003_L0_<...> \
     --methods M1,M2,M2-full,M3,M4,M5 --run-id E1_P003_L0
-# ablation (ví dụ golden dùng baseline ra lệnh, hoặc tắt Huber):
-python tools/experiments/replay_pose.py --session ... --methods M3,M4,M5 --override golden.stereo_source=commanded --run-id E1_P003_L0_cmd
+# ablation nguồn golden (cả ba nguồn; noise model phải được ước lượng với CÙNG nguồn):
+python tools/experiments/replay_pose.py --session ... --methods M3,M4,M5 --override golden.stereo_source=diamond \
+    --noise-model configs/noise_model_diamond.yaml --run-id E1_P003_L0_gdiamond
+python tools/experiments/replay_pose.py --session ... --methods M3,M4,M5 --override golden.stereo_source=commanded \
+    --noise-model configs/noise_model_commanded.yaml --run-id E1_P003_L0_gcmd
+python tools/experiments/replay_pose.py --session ... --methods M3,M4,M5 --override golden.stereo_source=commanded_epipolar \
+    --noise-model configs/noise_model_epipolar.yaml --run-id E1_P003_L0_gepi
+# ablation trọng số (σ đo bằng độ rung) và tắt Huber:
+python tools/experiments/replay_pose.py --session ... --methods M4-jitter --run-id E1_P003_L0_jitter
 python tools/experiments/replay_pose.py --session ... --methods M4 --override pose.huber=false --run-id E1_P003_L0_nohuber
 
 python tools/experiments/eval_pose.py --logs "logs/experiments/E1/E1_*.jsonl" --out results/E1/eval
