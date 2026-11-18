@@ -8,7 +8,8 @@ Image level: ROC-AUC (image_score), TPR at FPR 5 %, false-alarm rate on
 unchanged pairs (>= 1 region). Region level: a prediction matches a GT box if
 IoU >= 0.25 OR its centre lies inside the GT box (greedy by score); P/R/F1;
 recall by size (small < 5 mm, medium 5-15 mm, large > 15 mm); class macro-F1
-on matched regions for pipelines with YOLO. Sensitivity curve vs deliberate
+on matched regions for pipelines with YOLO. P3 is scored on its SSIM regions and
+the virtual row P3v on the SSIM regions confirmed by YOLO (R4). Sensitivity curve vs deliberate
 misalignment (offset_mm/offset_deg). Bootstrap CIs over pairs (seeded).
 """
 from __future__ import annotations
@@ -86,7 +87,26 @@ def macro_f1(y_true: list[str], y_pred: list[str]) -> float | None:
     return float(np.mean(f1s))
 
 
+YOLO_PIPELINES = {"P0", "P1", "P3", "P3v", "P4"}
+
+
+def with_verified_rows(rows: list[dict]) -> list[dict]:
+    """Add the virtual pipeline P3v (R4): the P3 record scored on its SSIM regions
+    CONFIRMED by YOLO (``verified_regions``, ``image_score_verified``). The P3
+    row itself stays scored on the raw SSIM regions."""
+    out = list(rows)
+    for r in rows:
+        o = r.get("output") or {}
+        if r.get("arm") == "P3" and "verified_regions" in o:
+            v = dict(r)
+            v["arm"] = "P3v"
+            v["output"] = {**o, "regions": o["verified_regions"], "image_score": o.get("image_score_verified", 0.0)}
+            out.append(v)
+    return out
+
+
 def evaluate(rows: list[dict], gts: dict, *, seed: int = 2027, n_boot: int = 2000) -> dict:
+    rows = with_verified_rows([r for r in rows if r.get("record_type") != "tool"])
     per_pair, summary = [], {}
     pipelines = sorted({r["arm"] for r in rows if r.get("input", {}).get("pair_id") in gts})
     for code in pipelines:
@@ -148,6 +168,10 @@ def evaluate(rows: list[dict], gts: dict, *, seed: int = 2027, n_boot: int = 200
         curve_deg = sensitivity("offset_deg", ((0, 0.25), (0.25, 0.5), (0.5, 1), (1, 2), (2, float("inf"))))
         summary[code] = {
             "n_pairs": len(recs), "n_changed": len(pos), "n_unchanged": len(neg),
+            "has_classes": code in YOLO_PIPELINES,
+            "definition": ("SSIM regions confirmed by YOLO" if code == "P3v" else
+                           "SSIM regions" if code in ("P1", "P2", "P3") else
+                           "legacy contours" if code == "P0" else "YOLO detections"),
             "roc_auc": roc_auc(pos, neg), "tpr_at_fpr5": tpr_at_fpr(pos, neg, 0.05),
             "false_alarm_rate_unchanged": float(np.mean(unchanged_alarm)) if unchanged_alarm else None,
             "false_alarm_ci95": bootstrap_ci([float(a) for a in unchanged_alarm], np.mean, seed=seed, n_boot=n_boot),

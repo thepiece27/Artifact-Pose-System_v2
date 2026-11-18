@@ -111,7 +111,10 @@ def test_e3_chain_acceptance(pair_sets, tmp_path):
     assert ev["P2"]["sensitivity_vs_offset"] and ev["P2"]["sensitivity_vs_offset_deg"]
     assert make_tables.main(["--eval", str(tmp_path / "ev.json"), "--out", str(tmp_path / "tab"),
                              "--log-root", str(tmp_path / "logs")]) == 0
-    assert "| P3 |" in (tmp_path / "tab.md").read_text(encoding="utf-8")
+    tab = (tmp_path / "tab.md").read_text(encoding="utf-8")
+    assert "| P3 |" in tab and "| P3v |" in tab and "P3v = vùng SSIM được YOLO xác nhận" in tab
+    assert ev["P3v"]["false_alarm_rate_unchanged"] <= ev["P3"]["false_alarm_rate_unchanged"]
+    assert [ln.split("|")[1].strip() for ln in tab.splitlines() if ln.startswith("| P") and "Pipeline" not in ln] ==         ["P0", "P1", "P2", "P3", "P3v", "P4"]
 
 
 def test_e2_eval_chain(tmp_path):
@@ -122,9 +125,11 @@ def test_e2_eval_chain(tmp_path):
                             "--n-boot", "100", "--log-root", str(tmp_path), "--run-id", "ev2"]) == 0
     assert read_jsonl(tmp_path / "E2" / "ev2.jsonl")[0]["arm"] == "eval_reloc"
     ev = json.loads((tmp_path / "ev2.json").read_text())
-    assert set(ev["arms"]) == {"C-A", "C-B", "C-C", "C-D"} and ev["n_paired_blocks"] == 4
-    for a in ev["arms"]:
-        assert ev["summary"][a]["n_trials"] == 4 and ev["summary"][a]["success_gt_rate"] is not None
-    assert len(ev["paired_tests"]["mcnemar_success_gt"]) == 6
+    assert ev["conditions"] == ["aligned"] and set(ev["summary"]["aligned"]) == {"C-A", "C-B", "C-C", "C-D"}
+    for a, s in ev["summary"]["aligned"].items():
+        assert s["n_trials"] == 4 and s["success_gt_rate"] is not None and s["total_moves"]["median"] is not None
+    tests = ev["paired_tests"]["aligned"]
+    assert tests["n_paired_blocks"] == 4 and len(tests["mcnemar_success_gt"]) == 6
+    assert {(w["a"], w["b"]) for w in tests["wilcoxon_total_moves"]} == {("C-A", "C-D"), ("C-B", "C-D")}
     assert make_tables.main(["--eval", str(tmp_path / "ev2.json"), "--out", str(tmp_path / "t2"),
                              "--log-root", str(tmp_path)]) == 0

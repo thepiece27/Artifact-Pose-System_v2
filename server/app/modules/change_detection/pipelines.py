@@ -93,6 +93,32 @@ def _tau(cfg, thresholds: dict | None) -> tuple[float | None, str | None]:
     return float(thresholds["tau"]), f"{Path(thresholds.get('_path', 'thresholds.yaml')).name}#{thresholds.get('_sha256', '')[:12]}"
 
 
+def _box_match(det_box, region_box, iou_thr: float = 0.25) -> bool:
+    """IoU >= iou_thr OR the detection centre lies inside the region box."""
+    ax1, ay1, ax2, ay2 = (float(v) for v in det_box)
+    bx1, by1, bx2, by2 = (float(v) for v in region_box)
+    ix = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    iy = max(0.0, min(ay2, by2) - max(ay1, by1))
+    inter = ix * iy
+    union = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
+    cx, cy = (ax1 + ax2) / 2, (ay1 + ay2) / 2
+    return (union > 0 and inter / union >= iou_thr) or (bx1 <= cx <= bx2 and by1 <= cy <= by2)
+
+
+def verify_regions(regions: list[dict], detections: list[dict], iou_thr: float = 0.25) -> list[dict]:
+    """SSIM regions with >= 1 matching YOLO detection (reference frame), each
+    carrying ``yolo_confidence_max`` / ``yolo_class`` of its best detection."""
+    out = []
+    for r in regions:
+        matched = [d for d in detections
+                   if _box_match(d.get("bbox_ref_xyxy", d["bbox_xyxy"]), r["bbox_ref_xyxy"], iou_thr)]
+        if matched:
+            best = max(matched, key=lambda d: float(d["confidence"]))
+            out.append({**r, "yolo_confidence_max": float(best["confidence"]), "yolo_class": best["class_name"],
+                        "n_detections": len(matched)})
+    return out
+
+
 def _strip(regions: list[dict]) -> list[dict]:
     return [{k: v for k, v in r.items() if k != "contour"} for r in regions]
 
@@ -179,6 +205,10 @@ def run_pipeline(code: str, *, reference: np.ndarray, current: np.ndarray, cfg, 
             # cita-baseline fallback (full-image YOLO when damage is tiny), on the ALIGNED image.
             dets = _full_image_yolo(model_service, model_name, comp["aligned"])
             out["detections"] = [dict(x, bbox_ref_xyxy=list(map(float, x["bbox_xyxy"]))) for x in dets]
+        # R4: SSIM regions confirmed by at least one YOLO detection (scoring only;
+        # YOLO itself is untouched). Evaluated as the virtual pipeline "P3v".
+        out["verified_regions"] = verify_regions(out["regions"], out["detections"])
+        out["image_score_verified"] = max((r["score"] for r in out["verified_regions"]), default=0.0)
     return out
 
 

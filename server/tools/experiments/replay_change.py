@@ -88,7 +88,8 @@ def main(argv=None) -> int:
                                        model_service=model_service, out_dir=out_root / log.run_id / code / q["pair_id"],
                                        reference_path=q["golden_path"], current_path=q["current_path"],
                                        artifact_id=q["pair_id"])
-                    for key in ("pipeline", "regions", "detections", "image_score", "ssim", "roi_afd_px", "ecc_ok",
+                    for key in ("pipeline", "regions", "detections", "image_score", "verified_regions",
+                                "image_score_verified", "ssim", "roi_afd_px", "ecc_ok",
                                 "ai_input_package_path", "damage_pct", "threshold", "alignment_quality",
                                 "sift_inliers", "registration", "photometric", "registration_eval_only"):
                         if key in res:
