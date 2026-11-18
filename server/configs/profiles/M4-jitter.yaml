@@ -1,0 +1,5 @@
+name: M4-jitter
+extends: M4
+description: "Ablation: M4 with sigmas from static jitter (e0_noise --estimator jitter), to show why jitter is the wrong noise scale"
+pose:
+  noise_model: configs/noise_model_jitter.yaml   # e0_noise.py --estimator jitter --out configs/noise_model_jitter.yaml

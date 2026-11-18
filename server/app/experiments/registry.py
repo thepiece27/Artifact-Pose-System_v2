@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 POSE_METHODS = ("M1", "M2", "M3", "M4", "M5")
+POSE_ABLATIONS = ("M2-full", "M4-jitter")
 CONTROL_ARMS = ("C-A", "C-B", "C-C", "C-D")
 PIPELINES = ("P0", "P1", "P2", "P3", "P4")
 
@@ -60,6 +61,7 @@ register("M2", "pose", _POSE, "M2", "Markerless Hung-style ORB/QuadTree + EPnP +
 register("M2-full", "pose", _POSE, "M2-full", "Markerless Hung-style at full resolution")
 register("M3", "pose", _POSE, "M3", "Hybrid, PBL weights (Omega_d=1e4 I, Omega_o=I), Huber 2")
 register("M4", "pose", _POSE, "M4", "Hybrid, measured-noise weights + covariance")
+register("M4-jitter", "pose", _POSE, "M4-jitter", "Ablation: M4 weighted with static-jitter sigmas")
 register("M5", "pose", _POSE, "M5", "M4 + stacked fusion of 3 static frames")
 
 _CTRL = "app.modules.artifact_pose.control:make_controller"

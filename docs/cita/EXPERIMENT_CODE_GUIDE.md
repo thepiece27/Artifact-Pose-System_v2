@@ -81,25 +81,39 @@ python tools/capture_session.py --exp E0.2 --painting-id P001 --distance-cm 65 -
     --settle-s 2 --i-know-hardware-moves burst --n 60 --first-is-golden
 ```
 
-### E0.3 – Nhiễu ORB σ_o
+### E0.3 – Mô hình nhiễu σ_d, σ_o (VCE)
+
+Chụp trên **tranh hiệu chuẩn riêng `P000`**. Tranh này **không** dùng trong E1. Chụp một lưới nhỏ để phần dư có đa dạng:
 
 ```bash
-# Pi: phiên có golden + stereo phải (lưới chỉ 1 vị trí 0)
-python tools/capture_session.py --exp E0.3 --painting-id P001 --distance-cm 65 --settle-s 2 \
-    --i-know-hardware-moves grid --x 0 --z 0 --pan 0 --frames 20 --golden-frames 3 --with-stereo
+# Pi
+python tools/capture_session.py --exp E0.3 --painting-id P000 --distance-cm 65 --settle-s <t_s> \
+    --i-know-hardware-moves grid --x -20,0,20 --z 0 --pan -2,0,2 --frames 3 --golden-frames 3 --with-stereo --return-home
 ```
 
 ```bash
-# Server: tạo configs/noise_model.yaml (M4/M5 bắt buộc có file này)
-python tools/experiments/e0_noise.py \
-    --burst data/sessions/E0.2/E0.2_P001_L0_* data/sessions/E0.3/E0.3_P001_L0_* \
-    --golden-session data/sessions/E0.3/E0.3_P001_L0_<...> \
-    --out configs/noise_model.yaml
+# Server: noise model chính (VCE, mặc định). M4/M5 bắt buộc có file này.
+python tools/experiments/e0_noise.py --golden-session data/sessions/E0.3/E0.3_P000_* \
+    [--burst data/sessions/E0.2/*] --out configs/noise_model.yaml
+# Ablation M4-jitter (σ đo bằng độ rung khung tĩnh, như v1.1):
+python tools/experiments/e0_noise.py --estimator jitter --golden-session data/sessions/E0.3/E0.3_P000_* \
+    --out configs/noise_model_jitter.yaml
 ```
+
+* **VCE** (ước lượng thành phần phương sai, Helmert/Förstner rút gọn):
+  * σ_d và σ_o là thang của phần dư sau khi fit **cùng một** bài toán pose lai. Vì vậy cả hai đều gồm sai số hệ thống: lỗi in, méo còn sót, sai số landmark tam giác hóa.
+  * Bắt đầu từ 0,5 / 1,5 px, dừng khi cả hai σ đổi < 1% (tối đa 20 vòng).
+  * Có cảnh báo nếu tổng độ dư của Diamond < 20, khi đó cần chụp thêm khung.
+* **Độ rung khung tĩnh** chỉ đo nhiễu tạm thời. Giá trị này được giữ trong file làm thông tin phụ (`diamond_jitter_px`, `orb_keypoint_jitter_px`), **không** dùng làm trọng số.
+  * Trên dữ liệu mô phỏng: lệch hệ thống 0,3 px + nhiễu 0,03 px. VCE ra σ_d ≈ 0,34 px, σ_o ≈ 0,93 px (tỉ lệ trọng số khoảng 7:1), còn độ rung ra σ_d ≈ 0,026 px (tỉ lệ khoảng 1300:1, gần mức PBL 10⁴:1).
+* **Nguồn golden.**
+  * σ_o phụ thuộc cách dựng golden. File ghi `golden_stereo_source`, và M4/M5 **từ chối** file có nguồn khác `golden.stereo_source` của profile.
+  * Khi chạy ablation với nguồn golden khác, tạo thêm noise model: `e0_noise.py --stereo-source commanded_epipolar --out configs/noise_model_epipolar.yaml`, rồi truyền `--noise-model` tương ứng cho `replay_pose`.
+* File có thêm `pose_sigma_center_mm_median` / `pose_sigma_rot_deg_median` (σ tâm camera của một khung tại nghiệm VCE). Các giá trị này dùng cho `run_reloc_trials --noise-from`.
 
 Kết quả:
-* `configs/noise_model.yaml`: σ_d, σ_o, theo từng khoảng cách, jitter của bảng (E0.5), nguồn session kèm sha256, hash nội dung.
-* `configs/noise_model.report.json`: chi tiết theo từng khung.
+* `configs/noise_model.yaml` (schema `cita.noise_model.v2`): σ_d, σ_o, lịch sử VCE (σ theo vòng, độ dư, số khung, số phần dư), độ rung, jitter của bảng (E0.5), nguồn session kèm sha256, hash nội dung.
+* `configs/noise_model.report.json`: chi tiết theo từng phiên.
 
 Muốn ghi đè file `noise_model.yaml` đã có thì phải thêm `--force`; bản cũ được giữ lại thành `.bak`.
 

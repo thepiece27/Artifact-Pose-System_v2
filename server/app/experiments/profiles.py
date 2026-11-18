@@ -98,7 +98,7 @@ class GoldenSection:
     build_markerless: bool = False
 
     def __post_init__(self):
-        _choice(self.stereo_source, "golden.stereo_source", ("diamond", "commanded"))
+        _choice(self.stereo_source, "golden.stereo_source", ("diamond", "commanded", "commanded_epipolar"))
         _positive(self.baseline_mm, "golden.baseline_mm")
 
 

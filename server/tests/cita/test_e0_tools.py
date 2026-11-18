@@ -38,14 +38,23 @@ def test_e0_settle_and_repeat_on_dry_run(tmp_path):
 
 
 def test_e0_noise_writes_noise_model(tmp_path):
-    session = synth.make_pose_session(tmp_path, session_id="B", frames_per_pose=5,
-                                      offsets=[{"x_mm": 0, "z_mm": 0, "pan_deg": 0, "tilt_deg": 0}])
+    # E0.3-like: small grid around golden on a calibration painting, golden + stereo.
+    session = synth.make_pose_session(tmp_path, session_id="B", frames_per_pose=3, offsets=[
+        {"x_mm": 0, "z_mm": 0, "pan_deg": 0, "tilt_deg": 0}, {"x_mm": -20, "z_mm": 0, "pan_deg": 0, "tilt_deg": 0},
+        {"x_mm": 20, "z_mm": 0, "pan_deg": 2, "tilt_deg": 0}, {"x_mm": 0, "z_mm": 0, "pan_deg": -2, "tilt_deg": 0}])
     out = tmp_path / "noise_model.yaml"
     assert e0_noise.main(["--burst", str(session), "--golden-session", str(session), "--out", str(out),
                           "--log-root", str(tmp_path / "logs")]) == 0
     model = yaml.safe_load(out.read_text())
-    assert model["schema"] == "cita.noise_model.v1"
-    assert 0 < model["diamond_sigma_px"] < 0.5 and 0 < model["orb_sigma_px"] < 1.5
+    assert model["schema"] == "cita.noise_model.v2" and model["estimator"] == "vce"
+    assert model["golden_stereo_source"] == "diamond" and model["vce"]["n_iterations"] <= 20
+    assert 0 < model["diamond_sigma_px"] < 2.0 and 0 < model["orb_sigma_px"] < 3.0
+    assert model["diamond_jitter_px"] is not None and model["pose_sigma_center_mm_median"]
+    jit = tmp_path / "noise_model_jitter.yaml"
+    assert e0_noise.main(["--golden-session", str(session), "--estimator", "jitter", "--out", str(jit),
+                          "--log-root", str(tmp_path / "logs")]) == 0
+    mj = yaml.safe_load(jit.read_text())
+    assert mj["estimator"] == "jitter" and mj["diamond_sigma_px"] == mj["diamond_jitter_px"]
     assert model["sources"][0]["session_id"] == "B" and len(model["content_sha256"]) == 64
     with pytest.raises(SystemExit):
         e0_noise.main(["--burst", str(session), "--out", str(out), "--log-root", str(tmp_path / "logs")])

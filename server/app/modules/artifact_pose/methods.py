@@ -36,27 +36,41 @@ from .motion import as_T, average_poses, camera_center_in_golden, invert, relati
 from .solver import Block, refine_pose_blocks
 
 METHODS = ("legacy", "M1", "M2", "M3", "M4", "M5")
-NOISE_SCHEMA = "cita.noise_model.v1"
+NOISE_SCHEMAS = ("cita.noise_model.v1", "cita.noise_model.v2")
 
 
 class NoiseModelError(ValueError):
     pass
 
 
-def load_noise_model(path: str | Path) -> dict:
+def load_noise_model(path: str | Path, *, expected_stereo_source: str | None = None) -> dict:
+    """Read a noise model (schema v1 or v2).
+
+    v2 records ``golden_stereo_source`` (sigma_o depends on how the golden map
+    was built); a mismatch with the running profile's ``golden.stereo_source``
+    is an error. v1 files carry no source and are accepted as they are.
+    """
     path = Path(path)
     if not path.exists():
         raise NoiseModelError(
-            f"Noise model {path} not found. Run tools/experiments/e0_noise.py on E0.2/E0.3 sessions "
+            f"Noise model {path} not found. Run tools/experiments/e0_noise.py on E0.3 sessions "
             "first; M4/M5 never fall back to default sigmas.")
     import yaml
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if data.get("schema") != NOISE_SCHEMA:
-        raise NoiseModelError(f"{path}: schema must be {NOISE_SCHEMA}")
+    if data.get("schema") not in NOISE_SCHEMAS:
+        raise NoiseModelError(f"{path}: schema must be one of {NOISE_SCHEMAS}")
     for key in ("diamond_sigma_px", "orb_sigma_px"):
         v = data.get(key)
         if not isinstance(v, (int, float)) or not v > 0:
             raise NoiseModelError(f"{path}: {key} must be a positive number")
+    if data["schema"].endswith("v2"):
+        src = data.get("golden_stereo_source")
+        if not src:
+            raise NoiseModelError(f"{path}: v2 noise model without golden_stereo_source")
+        if expected_stereo_source is not None and src != expected_stereo_source:
+            raise NoiseModelError(
+                f"{path}: estimated with golden_stereo_source={src!r} but the profile uses "
+                f"{expected_stereo_source!r}; re-run e0_noise.py --stereo-source {expected_stereo_source}")
     from app.experiments.trial_log import sha256_file
     data["_path"], data["_sha256"] = str(path), sha256_file(path)
     return data
@@ -92,7 +106,8 @@ class PoseMethodConfig:
         if p.method in ("M4", "M5"):
             if not p.noise_model:
                 raise NoiseModelError(f"{p.method} requires pose.noise_model in the profile")
-            noise = load_noise_model(profile.resolve_path(p.noise_model))
+            noise = load_noise_model(profile.resolve_path(p.noise_model),
+                                     expected_stereo_source=profile.golden.stereo_source)
             dsig, osig = float(noise["diamond_sigma_px"]), float(noise["orb_sigma_px"])
         return cls(method=p.method, diamond_sigma_px=dsig, orb_sigma_px=osig, huber_delta=p.huber_delta,
                    huber=p.huber, backend=p.backend, orb_region=p.orb_region, frames=p.frames,
