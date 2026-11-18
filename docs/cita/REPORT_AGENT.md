@@ -2,7 +2,7 @@
 
 * Ngày: 18/11/2026.
 * Nhánh: `cita/experiment-ready`.
-* Tag: `cita-baseline` (eaed45e), `cita-freezeA`, `cita-freezeB`, `cita-freezeC`.
+* Tag: `cita-baseline` (eaed45e), `cita-freezeA`, `cita-freezeB`, `cita-freezeC`, `cita-exp-v1.0`, `cita-exp-v1.1`, `cita-exp-v1.2`. Đợt sửa v1.2 xem §10.
 * Tài liệu đi kèm: [EXPERIMENT_CODE_GUIDE.md](EXPERIMENT_CODE_GUIDE.md) (cách chạy), [CODE_MAP.md](CODE_MAP.md), [FRAMES_AND_UNITS.md](FRAMES_AND_UNITS.md), [CHANGELOG_CITA.md](CHANGELOG_CITA.md).
 
 ## 1. Tóm tắt
@@ -126,6 +126,7 @@ File code cũ bị sửa (mọi thay đổi đều giữ mặc định cũ):
 * **Hiệp phương sai dưới ước lượng khi có sai số hệ thống.** Đúng trong Monte Carlo có nhiễu khớp mô hình (độ phủ 2σ ≈ 95%). Trên dữ liệu tổng hợp có thiên lệch hệ thống (golden lệch tỉ lệ), độ phủ chỉ khoảng 11–20%. Cần kiểm lại trên E1 thật (`coverage_2sigma` trong `eval_pose`).
 * **Ngưỡng E3** chỉ tốt khi tập val đủ lớn: ít nhất 20 cặp không đổi cho mục tiêu FAR 5%.
 * **CI chưa chạy thử trên GitHub**, mới kiểm trên Windows/Python 3.11. Test hồi quy so số thực với dung sai 1e-6…1e-9. Nếu nền Linux cho khác biệt dấu phẩy động lớn hơn mức đó thì cần nới dung sai, **không** phải ghi lại baseline.
+  * *Cập nhật v1.2 (R1):* đã chạy trên Linux (WSL Ubuntu 22.04, Python 3.11, file lock) và nới dung sai theo số đo được, xem §10.2. CI trên GitHub vẫn chưa chạy thử.
 * **Log E2 phía server** ghi trong container tại `/app/logs` (không có volume): cần mount nếu chạy E2 bằng Docker.
 
 ## 7. Kết quả test và vòng ổn định
@@ -168,5 +169,98 @@ Khuyến nghị (nhóm tự làm, có người duyệt):
 4. Chụp E1 bằng `grid --with-stereo`, replay và eval (kèm ablation `golden.stereo_source=commanded`).
 5. Trước E2: thử `run_reloc_trials --virtual` với tham số rig đo được, rồi mới lên rig thật (biên độ nhỏ trước).
 6. E3: chụp các tập val/test riêng, gán nhãn GT theo B.4, chọn ngưỡng **chỉ** trên val.
-7. Sau `cita-freezeC` chỉ sửa lỗi, tăng tag `cita-exp-v1.N` và ghi vào `CHANGELOG_CITA.md`. Bản bàn giao là `cita-exp-v1.1`.
+7. Sau `cita-freezeC` chỉ sửa lỗi, tăng tag `cita-exp-v1.N` và ghi vào `CHANGELOG_CITA.md`. Bản bàn giao hiện tại là `cita-exp-v1.2` (§10).
 8. Xử lý secrets theo §8.
+
+## 10. Đợt v1.2 (`cita-exp-v1.2`)
+
+* Ngày 18/11/2026. Bắt đầu từ `cita-exp-v1.1` (7016514) và làm theo `AGENT_PROMPT_CITA2027_v1.2.md`.
+* Ràng buộc của đặc tả gốc (§3, §12) vẫn giữ nguyên.
+* Đã làm đủ **R1–R10**, không mục nào dời sang v1.3.
+* **Chưa có dữ liệu thật nào bị ảnh hưởng**, vì chưa có phiên thật nào được chụp hay chạy.
+
+### 10.1 Đã làm
+
+| Mục | Commit | Nội dung | Nghiệm thu |
+|---|---|---|---|
+| R1 | `c237219` | So sánh P0 với `expected_baseline` theo dung sai đo được giữa Windows và Linux; CI cài `requirements-lock.txt` và in phiên bản thư viện | Test hồi quy xanh trên cả hai nền; `expected_baseline` không đổi |
+| R2 | `413ef9f` | VCE (Helmert/Förstner) cho σ_d, σ_o trên phần dư chiếu lại; `noise_model` v2 có `golden_stereo_source`; thêm `M4-jitter` | `test_noise_vce.py`: σ_d ∈ [0,2; 0,45], σ_o ∈ [0,8; 1,25] khi σ thật là 0,3 / 1,0 px |
+| R3 | `bad872c` | Mỗi nhánh một file J; `probe.reuse` = `ttl` / `per_block` / `never`; `block_id`; workflow nhận `cita_probe_reuse` / `cita_block_id` | `test_jacobian_reuse.py` |
+| R5 | `22467b5`, `c27503c` | Đơn vị là vị trí; `e_t_first` là chỉ số chính; M5 có trong kiểm định cặp; so sánh định trước + Holm; bootstrap cụm hai tầng; `fallback_rate`, `n_orb_inliers`, `e_t` tách lai/fallback; độ phủ a priori và a posteriori | `test_eval_pose_r5.py`: 12 đơn vị; CI cụm rộng hơn CI iid khi có thiên lệch theo phiên |
+| R4 | `c309d4b` | `verified_regions` và `image_score_verified`; hàng ảo P3v; YOLO không đổi | `test_p3v.py`: cặp không đổi → P3 là báo động giả, P3v thì không; cặp có hư hại → P3v có TP |
+| R6 | `e65687c` | `golden.stereo_source = commanded_epipolar`; `e0_stereo_check.py` | `test_stereo_epipolar.py` |
+| R7 | `defd0d8`, `93ef8d3` | Hai điều kiện lắp `aligned` / `yawed25` (ảo và thật); chỉ số chính `total_moves`; τ bắt buộc; `pwm_step_deg`; `--noise-from`; cảnh báo khi τ bộ điều khiển lỏng hơn τ chấm | `test_e2_mount.py` |
+| R8 | `8ecc00b` | `capture_session.py`: in vùng di chuyển, thời gian và dung lượng rồi đòi xác nhận; kiểm tra đĩa; lệnh con `awb` + `--awb-from`; `--pulse-delay-us`; `release_servos` chỉ nhả pan | `test_capture_session_r8.py` (dry-run và fake) |
+| R9 | `5d0338c` | Tài liệu: dấu của θ; đính chính §5.5; mục "Trước mỗi phiên trên rig"; CHANGELOG | — |
+| R10 | `bb7b9a2` | Test snapshot bảng E1/E2/E3 (`.md` + `.tex`, vi/en); sửa lỗi `--out` có dấu chấm | `test_tables_snapshot.py` |
+
+### 10.2 Quyết định (chỗ đặc tả chưa nói rõ; đều chọn hướng thận trọng)
+
+1. **R1, dung sai.**
+   * Chênh lệch đo được giữa hai nền: `ssim` 4,3e-6 / 3,0e-6; `valid_mask_ratio` 1,3e-5 / 4,03e-4; `region_ssim` tối đa 1,7e-3.
+   * Dung sai đặt khoảng 2–3 lần mức đó: 1e-5 / 1e-3 / 5e-3.
+   * Lớp, độ tin cậy, hộp, crop, số vùng và mọi khóa nguyên/phân loại vẫn phải khớp **tuyệt đối**.
+   * CI cài file lock để hai nền dùng cùng phiên bản thư viện.
+2. **R2, cấu hình VCE.**
+   * Huber δ = 2. Điểm ORB chỉ được tính khi phần dư chuẩn hóa ≤ 3.
+   * Dừng khi thay đổi tương đối < 1%, tối đa 20 vòng.
+   * Cảnh báo khi độ dư Diamond < 20.
+   * Mô phỏng (σ thật 0,3 / 1,0 px): σ_d = 0,342, σ_o = 0,931 px, sau 4 vòng. Cách đo jitter cho σ_d = 0,026 px, tức tỉ trọng Diamond:ORB là 1314:1, so với 7,4:1 khi dùng VCE.
+   * `noise_model` v1 vẫn nạp được nhưng không kiểm nguồn golden. v2 thì bắt buộc khớp nguồn, sai là từ chối.
+3. **R3 và R7 dùng chung commit.** Phần nền cho R7 nằm trong commit R3 vì cùng file: `RigParams.preset`, PWM, `noise_from_file`, viết lại `run_reloc_trials`/`eval_reloc`. Commit R7 bổ sung test và hướng dẫn.
+4. **R3, mặc định.**
+   * `run_reloc_trials` dùng `--probe-reuse per_block`; server vẫn `ttl`.
+   * Khi chạy thật, tool đổi tên J cũ thành `*.stale` (không xóa) và ghi việc này vào log.
+   * File J dạng cũ (v1) có tên không chứa nhánh nên không còn được đọc. Lần đầu, mỗi nhánh sẽ thăm dò lại.
+5. **R5.**
+   * `make_tables.py` được viết lại trong commit R5, dùng chung cho E1/E2/E3. Ô không áp dụng ghi "—" (LaTeX `---`).
+   * Phép so sánh thiếu phương pháp bị bỏ qua, không báo lỗi.
+   * `fallback_rate` chỉ áp dụng cho phương pháp lai (M3/M4/M5). Với M1 (chỉ Diamond) và M2 (không marker) thì là "—".
+6. **R4.** P1 khi có YOLO cũng có `verified_regions`, nhưng không thêm hàng "P1v" vì đặc tả chỉ yêu cầu P3v.
+7. **R6.**
+   * Giả định R = I giữa hai ảnh golden, vì chỉ slider trượt còn servo đứng yên.
+   * Hướng tịnh tiến: RANSAC 2 điểm trên ràng buộc t·(x₁×x₂) = 0, rồi tinh chỉnh SVD trên inlier. Dấu chọn theo cheirality. Độ dài lấy theo baseline lệnh.
+   * Quy tắc chọn nguồn: `commanded_epipolar` nếu trung vị |b_Diamond − b_lệnh| > 2 mm hoặc góc(Diamond, epipolar) > 1°.
+   * Mô phỏng slider lệch 5° so với trục x camera:
+
+     | Nguồn golden | Sai số hướng | e_t trung vị của M4 |
+     |---|---|---|
+     | `diamond` | 3,45° | 2,07 mm |
+     | `commanded` | 5° | 2,39 mm |
+     | `commanded_epipolar` | 0,27° | 0,81 mm |
+
+8. **R7.**
+   * Ở chế độ thật, `--mount-condition` là bắt buộc.
+   * `eval_reloc` từ chối chạy nếu thiếu τ và τ trong log không thống nhất.
+   * Thêm (từ smoke): nếu τ của bộ điều khiển lỏng hơn τ chấm thì có cảnh báo trong `warnings`. Các file `C-*` đang giữ chỗ 10 mm, nên khi chấm ở 2 mm thì tỉ lệ thành công chỉ đo quy tắc dừng.
+9. **R8.**
+   * Bảng kế hoạch được in ở mọi chế độ, nhưng chỉ ngoài `--dry-run` mới phải gõ `yes`. Gặp EOF (không có stdin) thì coi là từ chối.
+   * Dry-run ước 0,3 MB/khung.
+   * Lệnh `awb` không cần `--i-know-hardware-moves`, vì không di chuyển gì.
+   * Mã thoát: 2 (thiếu cờ phần cứng), 3 (không xác nhận), 4 (thiếu AWB), 5 (thiếu đĩa).
+10. **R10.** Snapshot ở `server/tests/cita/snapshots/`. Khi cố ý đổi định dạng bảng: chạy `CITA_UPDATE_SNAPSHOTS=1 pytest tests/cita/test_tables_snapshot.py` rồi duyệt diff.
+
+### 10.3 Sai khác và phát hiện thêm
+
+* **Lỗi tìm thấy khi chạy smoke, đã sửa kèm test:**
+  * M1 hiện "Rơi về Diamond 100%" (`c27503c`).
+  * τ bộ điều khiển và τ chấm không khớp mà không có cảnh báo (`93ef8d3`).
+  * `--out` có dấu chấm, ví dụ `eval_v1.2`, bị `Path.with_suffix` cắt thành `eval_v1.json`, nên có thể ghi đè kết quả khác mà không báo. Lỗi này có ở `eval_pose`, `eval_reloc`, `eval_change` và `make_tables` (`bb7b9a2`).
+* **R9.2, giới hạn của τ_R.** Mô phỏng ở §5.5 cho thấy: với rơ 0,4° và vùng chết 0,2°, τ_R = 0,2° **không nhánh nào đạt** khi có bước PWM 0,586°. Vậy τ_R dưới khoảng 0,3° là không thực tế với PCA9685 nếu rơ cỡ này. Chốt τ_R sau E0.4.
+* **Bảng "hiện trạng" của R7 trong đặc tả** (lệch 10°/25°/45°) dùng tham số rig cũ. Hướng dẫn §3 dùng số đo lại với các preset mới.
+* **P4 trên dữ liệu tổng hợp** có FAR 100% ở smoke, giống hệt v1.1. Đây không phải hồi quy của v1.2; dữ liệu tổng hợp chỉ có 3 cặp không đổi và YOLO giả.
+
+### 10.4 Kết quả test và vòng ổn định
+
+@@RESULTS@@
+
+### 10.5 Việc nhóm cần làm tiếp (bổ sung §9)
+
+1. Push nhánh và tag: `git push origin cita/experiment-ready --tags`. Các tag `cita-freezeA/B/C` và `cita-exp-v1.0/1.1/1.2` hiện **chưa có trên GitHub**.
+2. Chạy E0.3 trên tranh hiệu chuẩn P000:
+   * `e0_noise` (VCE) → `configs/noise_model.yaml`;
+   * `e0_noise --estimator jitter` → `configs/noise_model_jitter.yaml`;
+   * `e0_stereo_check` → chốt `golden.stereo_source` và ghi vào CHANGELOG **trước khi** đánh giá E1. Noise model phải ước lượng lại với đúng nguồn đã chốt.
+3. Chạy E0.4: đo rơ và vùng chết của servo, rồi chốt τ_t, τ_R trong các file `C-*` (thay giá trị giữ chỗ 10 mm) trước E2. Lưu ý giới hạn τ_R ở §10.3.
+4. E2: mỗi điều kiện lắp (`aligned`, `yawed25`) khởi tạo golden riêng.
+5. Trước mỗi phiên trên rig: theo EXPERIMENT_CODE_GUIDE §0.6 (khoảng trống X, `--return-home`, thẻ nhớ, chạy `awb` khi đổi đèn).

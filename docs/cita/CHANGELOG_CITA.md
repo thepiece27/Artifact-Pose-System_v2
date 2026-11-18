@@ -15,7 +15,8 @@ Mỗi lần sửa sau `cita-freezeC` thì tăng tag `cita-exp-v1.N` và thêm m�
 ## `cita-exp-v1.2` (18/11/2026)
 
 **Ảnh hưởng tới dữ liệu.** Chưa có dữ liệu thật nào bị ảnh hưởng, vì đợt này diễn ra trước mọi phiên thật.
-* Log dạng cũ vẫn đọc được: `noise_model` v1 vẫn được nạp; file J v1 bị coi là không khớp nhánh nên sẽ thăm dò lại.
+* Log dạng cũ vẫn đọc được, và `noise_model` v1 vẫn được nạp.
+* File J dạng cũ (v1, tên không chứa nhánh) không còn được đọc. Lần đầu, mỗi nhánh sẽ thăm dò J lại.
 * Sau khi có dữ liệu thật, chạy theo thứ tự trong EXPERIMENT_CODE_GUIDE:
   1. `e0_noise` (VCE) và `e0_stereo_check`;
   2. `replay_pose`, rồi `eval_pose`;
@@ -32,5 +33,7 @@ Mỗi lần sửa sau `cita-freezeC` thì tăng tag `cita-exp-v1.N` và thêm m�
 | R6 | `e65687c` | Thêm `golden.stereo_source = commanded_epipolar`: hướng baseline lấy từ ràng buộc epipolar tịnh tiến thuần, độ dài lấy theo lệnh. Thêm `e0_stereo_check.py` cùng quy tắc chọn nguồn | `stereo_direction.py`, `methods.py`, `tools/experiments/e0_stereo_check.py` |
 | R7 | `defd0d8` | E2 có hai điều kiện lắp, `aligned` và `yawed25`, ở cả chế độ ảo lẫn thật (`--mount-condition` bắt buộc khi chạy thật). Chỉ số chính là `total_moves`. τ bắt buộc trong `eval_reloc`. Thêm `--pwm-step-deg`, `--noise-from`, và dọn J cũ (`*.stale`) | `sim/virtual_rig.py`, `run_reloc_trials.py`, `eval_reloc.py` |
 | R8 | `8ecc00b` | `capture_session.py`: in vùng di chuyển, thời gian và dung lượng rồi đòi xác nhận `yes`. Kiểm tra đĩa (1,2×, đo lại sau khung đầu). Thêm lệnh con `awb` và `--awb-from` (thiếu AWB khi chạy thật thì báo lỗi), `--pulse-delay-us`. `release_servos` **chỉ nhả pan**, không bao giờ nhả tilt (cả `main_app`) | `embed/tools/capture_session.py`, `adapters/hardware_controller.py`, `adapters/camera_manager.py` |
-| R9 | (commit R9) | Tài liệu: dấu của `rotvec(ΔR)` (FRAMES_AND_UNITS §4); đính chính REPORT §5.5 (giới hạn là rơ và vùng chết, không phải lượng tử hóa); mục "Trước mỗi phiên trên rig"; mục changelog này | `docs/cita/*` |
-| R10 | (commit R10) | Test snapshot cho bảng E1/E2/E3 (`.md` + `.tex`): đúng cột, thứ tự hàng P0, P1, P2, P3, P3v, P4, và ô "—" | `tests/cita/test_tables_snapshot.py` |
+| R9 | `5d0338c` | Tài liệu: dấu của `rotvec(ΔR)` (FRAMES_AND_UNITS §4); đính chính REPORT §5.5 (giới hạn là rơ và vùng chết, không phải lượng tử hóa); mục "Trước mỗi phiên trên rig"; mục changelog này | `docs/cita/*` |
+| R10 | `bb7b9a2` | Test snapshot cho bảng E1/E2/E3 (`.md` + `.tex`, vi/en): đúng cột, thứ tự hàng P0, P1, P2, P3, P3v, P4, và ô "—". Sửa lỗi `--out` có dấu chấm (ví dụ `eval_v1.2` bị `with_suffix` cắt thành `eval_v1.json` và có thể ghi đè kết quả khác) ở `eval_pose`/`eval_reloc`/`eval_change`/`make_tables` | `tests/cita/test_tables_snapshot.py`, `tools/experiments/_common.py` |
+| R5 (bổ sung) | `c27503c` | Phát hiện khi smoke: `fallback_rate` chỉ áp dụng cho phương pháp lai; M1/M2 hiện "—" thay vì "100%" | `eval_pose.py` |
+| R7 (bổ sung) | `93ef8d3` | Phát hiện khi smoke: `eval_reloc` cảnh báo khi τ của bộ điều khiển lỏng hơn τ chấm (giá trị giữ chỗ 10 mm trong `C-*`) | `eval_reloc.py` |
