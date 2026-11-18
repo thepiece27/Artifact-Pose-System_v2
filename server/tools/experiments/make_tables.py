@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import add_log_args, log_tool_run  # noqa: E402
+from _common import add_log_args, log_tool_run, output_file  # noqa: E402
 
 NA = "—"
 E1_ORDER = ["M1", "M2", "M2-full", "M3", "M4", "M4-jitter", "M5"]
@@ -172,13 +172,13 @@ def main(argv=None) -> int:
     md, tex = render(evals, args.lang)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.with_suffix(".md").write_text(md, encoding="utf-8")
-    out.with_suffix(".tex").write_text(tex, encoding="utf-8")
+    output_file(out, ".md").write_text(md, encoding="utf-8")
+    output_file(out, ".tex").write_text(tex, encoding="utf-8")
     exps = sorted({e.get("experiment") for e in evals})
     log_tool_run("+".join(exps), "make_tables", inputs=args.eval, log_root=args.log_root, run_id=args.run_id,
-                 outputs={"markdown": str(out.with_suffix(".md")), "latex": str(out.with_suffix(".tex")),
+                 outputs={"markdown": str(output_file(out, ".md")), "latex": str(output_file(out, ".tex")),
                           "lang": args.lang})
-    print(f"wrote {out.with_suffix('.md')} and {out.with_suffix('.tex')}")
+    print(f"wrote {output_file(out, '.md')} and {output_file(out, '.tex')}")
     return 0
 
 

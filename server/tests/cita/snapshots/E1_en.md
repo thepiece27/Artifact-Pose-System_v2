@@ -1,0 +1,20 @@
+**E1 – pose accuracy against the independent ChArUco GT (unit = position, first frame; session-cluster bootstrap CI)**
+
+| Method | e_t median (mm) [CI] | e_t p95 (mm) | e_R median (°) | Failure (%) | Diamond fallback (%) | Time (ms) |
+|---|---|---|---|---|---|---|
+| M1 | 7.40 [5.90, 9.20] | 15.10 | 0.388 | 0.0 | — | 31 |
+| M2 | 3.20 [2.10, 4.60] | 9.75 | 0.210 | 8.3 | — | 140 |
+| M3 | 1.40 [1.00, 1.90] | 3.80 | 0.070 | 0.0 | 16.7 | 88 |
+| M4 | 0.81 [0.60, 1.12] | 2.25 | 0.049 | 0.0 | 8.3 | 95 |
+| M4-jitter | 0.95 [0.70, 1.31] | 2.60 | 0.053 | 0.0 | 8.3 | 96 |
+| M5 | 0.61 [0.42, 0.93] | 1.90 | 0.041 | 0.0 | 0.0 | 812 |
+
+**E1 – pre-registered contrasts (paired Wilcoxon over positions, Holm-adjusted)**
+
+| Contrast | Units | Median e_t difference (mm) | p | p_Holm |
+|---|---|---|---|---|
+| M3-M1 | 11 | -5.90 | 0.0010 | 0.0049 |
+| M4-M3 | 11 | -0.55 | 0.0034 | 0.0136 |
+| M5-M4 | 11 | -0.18 | 0.0420 | 0.1260 |
+| M4-M2 | 11 | -2.40 | 0.0019 | 0.0095 |
+| M4-M4-jitter | 11 | -0.12 | 0.3100 | 0.3100 |

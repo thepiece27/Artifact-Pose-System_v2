@@ -91,6 +91,16 @@ def expand(patterns: list[str]) -> list[str]:
     return out
 
 
+def output_file(prefix, ext: str, known=(".json", ".md", ".tex")) -> Path:
+    """``<prefix><ext>``. A prefix that already ends in a known extension is
+    stripped first; any other dot is kept (``eval_v1.2`` -> ``eval_v1.2.json``,
+    not ``eval_v1.json`` as ``Path.with_suffix`` would give)."""
+    p = Path(prefix)
+    if p.suffix in known:
+        p = p.with_suffix("")
+    return Path(str(p) + ext)
+
+
 def write_json(path: Path, data) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

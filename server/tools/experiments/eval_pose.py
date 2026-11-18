@@ -30,7 +30,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import add_log_args, expand, log_tool_run, write_json  # noqa: E402
+from _common import add_log_args, expand, log_tool_run, output_file, write_json  # noqa: E402
 
 from app.experiments.stats import (bootstrap_ci, cluster_bootstrap_ci, coverage, describe, friedman_wilcoxon,  # noqa: E402
                                    rmse, wilcoxon_contrasts)
@@ -222,11 +222,11 @@ def main(argv=None) -> int:
                       cluster=args.cluster)
     out = Path(args.out)
     write_csv(out.with_name(out.name + "_units.csv"), result["units"])
-    write_json(out.with_suffix(".json"), {"experiment": "E1", "seed": args.seed, "logs": args.logs,
+    write_json(output_file(out, ".json"), {"experiment": "E1", "seed": args.seed, "logs": args.logs,
                                           "contrasts_requested": args.contrasts,
                                           **{k: v for k, v in result.items() if k != "units"}})
     log_tool_run("E1", "eval_pose", inputs=expand(args.logs), log_root=args.log_root, run_id=args.run_id,
-                 seed=args.seed, outputs={"result": str(out.with_suffix(".json")),
+                 seed=args.seed, outputs={"result": str(output_file(out, ".json")),
                                           "units_csv": str(out.with_name(out.name + "_units.csv")),
                                           "e_t_first_median_mm": {m: result["summary"][m]["e_t_first"]["median"]
                                                                   for m in result["methods"]},

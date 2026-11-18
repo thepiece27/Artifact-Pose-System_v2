@@ -30,7 +30,7 @@ import numpy as np
 from scipy import stats as sstats
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import add_log_args, expand, load_calibration, log_tool_run, write_json  # noqa: E402
+from _common import add_log_args, expand, load_calibration, log_tool_run, output_file, write_json  # noqa: E402
 
 from app.experiments.stats import bootstrap_ci, describe, holm, mcnemar  # noqa: E402
 from app.experiments.trial_log import read_jsonl  # noqa: E402
@@ -171,12 +171,12 @@ def main(argv=None) -> int:
     res = evaluate(rows, tol_t_mm=args.tol_t_mm, tol_R_deg=args.tol_R_deg, golden=golden, cal=cal,
                    roi_polygon=roi_poly, spec=spec, seed=args.seed, n_boot=args.n_boot)
     out = Path(args.out)
-    write_json(out.with_suffix(".json"), {"experiment": "E2", "logs": args.logs, "seed": args.seed,
+    write_json(output_file(out, ".json"), {"experiment": "E2", "logs": args.logs, "seed": args.seed,
                                           **{k: v for k, v in res.items() if k != "trials"}})
-    write_json(out.with_name(out.name + "_trials.json"), res["trials"])
+    write_json(output_file(out, "_trials.json"), res["trials"])
     log_tool_run("E2", "eval_reloc", inputs=files + ([args.golden_image] if args.golden_image else []),
                  log_root=args.log_root, run_id=args.run_id, seed=args.seed,
-                 outputs={"result": str(out.with_suffix(".json")), "tol_t_mm": res["tol_t_mm"],
+                 outputs={"result": str(output_file(out, ".json")), "tol_t_mm": res["tol_t_mm"],
                           "tol_R_deg": res["tol_R_deg"],
                           "total_moves_median": {c: {a: s["total_moves"]["median"] for a, s in res["summary"][c].items()}
                                                  for c in res["conditions"]}})

@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import add_log_args, expand, log_tool_run, write_json  # noqa: E402
+from _common import add_log_args, expand, log_tool_run, output_file, write_json  # noqa: E402
 from _pairs import PairSet  # noqa: E402
 
 from app.experiments.stats import bootstrap_ci, roc_auc, tpr_at_fpr  # noqa: E402
@@ -216,11 +216,11 @@ def main(argv=None) -> int:
         w = csv.DictWriter(f, fieldnames=keys)
         w.writeheader()
         w.writerows(res["per_pair"])
-    write_json(out.with_suffix(".json"), {"experiment": "E3", "logs": args.logs, "seed": args.seed,
+    write_json(output_file(out, ".json"), {"experiment": "E3", "logs": args.logs, "seed": args.seed,
                                           **{k: v for k, v in res.items() if k != "per_pair"}})
     log_tool_run("E3", "eval_change", inputs=expand(args.logs) + [str(Path(p) / "pairs.json") for p in args.pairs],
                  log_root=args.log_root, run_id=args.run_id, seed=args.seed,
-                 outputs={"result": str(out.with_suffix(".json")),
+                 outputs={"result": str(output_file(out, ".json")),
                           "f1": {c: res["summary"][c]["f1"] for c in res["pipelines"]},
                           "false_alarm_rate_unchanged": {c: res["summary"][c]["false_alarm_rate_unchanged"]
                                                          for c in res["pipelines"]}})
