@@ -252,7 +252,19 @@ Khuyến nghị (nhóm tự làm, có người duyệt):
 
 ### 10.4 Kết quả test và vòng ổn định
 
-@@RESULTS@@
+Hai vòng liên tiếp (A tại `93ef8d3`, B tại `edafb1c`; giữa hai vòng chỉ có thay đổi tài liệu):
+
+| Bước | Vòng A | Vòng B |
+|---|---|---|
+| `pytest -q` Windows (Python 3.11.9), 3 lần | 170 passed, 1 skipped × 3 | 170 passed, 1 skipped × 3 |
+| `pytest -q` Linux (WSL Ubuntu 22.04, Python 3.11.18, file lock), 3 lần | 170 passed, 1 skipped × 3 | 170 passed, 1 skipped × 3 |
+| `compileall -q app ../embed ../ai_module` | sạch | sạch |
+| Smoke: synthetic → `e0_stereo_check` → `e0_noise` (vce + jitter) → `replay_pose` M1–M5 + M4-jitter (cả ba nguồn golden) → `eval_pose` → `make_tables` E1; `run_reloc_trials --virtual` aligned + yawed25 × 4 nhánh × 5 lượt → `eval_reloc` → `make_tables` E2; `calibrate_thresholds` (val) → `replay_change` P0–P4 → `eval_change` (có P3v) → `make_tables` E3 | chạy hết | chạy hết |
+| `smoke_server.py` với `pbl_legacy` / `proposed` | ok | ok |
+| `pbl_legacy` / P0 / C-A so với `expected_baseline` | khớp (dung sai R1) | khớp |
+| `git status`; secrets; `.env*`, `ai_module/**`, `client/**` | sạch; không có secret; không file nào bị sửa | như vòng A |
+
+Test bị bỏ qua là test parity với g2o, vì không build được module native. Không có test chập chờn.
 
 ### 10.5 Việc nhóm cần làm tiếp (bổ sung §9)
 
