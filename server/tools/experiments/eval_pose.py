@@ -67,6 +67,13 @@ def is_fallback(out: dict) -> bool:
     return out.get("strategy_used") == "diamond" or out.get("status") == "accepted_diamond_fallback"
 
 
+def is_hybrid_capable(out: dict) -> bool:
+    """The method runs the hybrid Diamond+ORB path (M3/M4/M5...): it either
+    used it or reported an explicit Diamond fallback. Diamond-only (M1) and
+    marker-less (M2) methods are not, so their fallback rate is "not applicable"."""
+    return out.get("strategy_used") == "hybrid" or out.get("status") == "accepted_diamond_fallback"
+
+
 def build_units(rows: list[dict]) -> tuple[dict, list[dict]]:
     gt_frames: dict = {}
     for r in rows:
@@ -94,6 +101,7 @@ def build_units(rows: list[dict]) -> tuple[dict, list[dict]]:
                  "target": first["input"].get("target") or {}}
             out = first.get("output") or {}
             u["fallback"] = is_fallback(out) if first.get("status") == "ok" else None
+            u["hybrid_capable"] = any(is_hybrid_capable(r.get("output") or {}) for r in recs)
             u["n_orb_inliers"] = out.get("n_orb_inliers")
             if key in gt:
                 dT_gt = gt[key]
@@ -133,8 +141,10 @@ def summarise(units: list[dict], *, seed: int, n_boot: int, cluster: str) -> dic
         if sigp:
             cov_post = coverage(np.ravel([u["c_err_mm"] for u in sigp]),
                                 np.ravel([u["sigma_center_mm_post"] for u in sigp]), 2.0)
-        hyb = [u["e_t_first"] for u in good if u.get("fallback") is False]
-        fb = [u["e_t_first"] for u in good if u.get("fallback")]
+        # Diamond fallback only exists for hybrid methods; M1 / M2 -> None ("—" in the table).
+        hybrid_method = any(u.get("hybrid_capable") for u in us)
+        hyb = [u["e_t_first"] for u in good if u.get("fallback") is False] if hybrid_method else []
+        fb = [u["e_t_first"] for u in good if u.get("fallback")] if hybrid_method else []
         inl = [u["n_orb_inliers"] for u in good if u.get("n_orb_inliers") is not None]
         e_t = {**describe(et),
                "median_ci95_cluster": cluster_bootstrap_ci(by_session, np.median, seed=seed, n_boot=n_boot),
@@ -145,7 +155,7 @@ def summarise(units: list[dict], *, seed: int, n_boot: int, cluster: str) -> dic
         out[m] = {
             "n_units": len(us), "n_with_gt": len(with_gt), "n_success": len(good),
             "failure_rate": (1 - len(good) / len(with_gt)) if with_gt else None,
-            "fallback_rate": (len(fb) / len(good)) if good else None,
+            "fallback_rate": (len(fb) / len(good)) if good and hybrid_method else None,
             "e_t_first": e_t,
             "e_t_med": describe([u.get("e_t_med") for u in with_gt]),
             "e_R_first": {**describe([u["e_R_first"] for u in good]),

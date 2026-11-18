@@ -77,6 +77,13 @@ def test_fallback_rate_and_split():
     assert s3["fallback_rate"] == pytest.approx(3 / 12)
     assert s3["e_t_fallback"]["n"] == 3 and s3["e_t_hybrid"]["n"] == 9
     assert res["summary"]["M4"]["fallback_rate"] == 0.0
+    # M1 is Diamond-only by design: its fallback rate is "not applicable", not 100 %.
+    m1 = [r for r in make_records() if r["arm"] == "M1"]
+    for r in m1:
+        r["output"].update(strategy_used="diamond", status="accepted")
+    res1 = eval_pose.evaluate(m1 + [r for r in make_records() if r["arm"] == "GT"], n_boot=50)
+    assert res1["summary"]["M1"]["fallback_rate"] is None
+    assert res1["summary"]["M1"]["e_t_fallback"]["n"] == 0
     assert s3["n_orb_inliers"]["p10"] == 0.0 and s3["n_orb_inliers"]["median"] == 80.0
     # Coverage prior (sigma 1 mm) vs posterior (2 mm) on the same errors.
     s4 = res["summary"]["M4"]

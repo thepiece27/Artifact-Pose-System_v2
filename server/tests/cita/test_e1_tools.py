@@ -45,7 +45,9 @@ def test_replay_eval_tables(tmp_path):
     for m in ev["methods"]:
         s = ev["summary"][m]
         assert s["n_with_gt"] == 3 and s["failure_rate"] == 0.0          # 3 positions = 3 units
-        assert s["e_t_first"]["median"] < 15.0 and s["fallback_rate"] is not None
+        assert s["e_t_first"]["median"] < 15.0
+        # Diamond fallback only applies to hybrid methods (M1 Diamond-only, M2 marker-less -> None / "—").
+        assert (s["fallback_rate"] is not None) == (m in ("M3", "M4", "M5"))
     assert ev["summary"]["M2-full"]["e_t_first"]["median"] < 4.0
     assert ev["summary"]["M4"]["coverage_2sigma"] is not None
     assert ev["paired_tests"]["n_common_units"] == 3 and "M5" in ev["paired_tests"]["methods"]
