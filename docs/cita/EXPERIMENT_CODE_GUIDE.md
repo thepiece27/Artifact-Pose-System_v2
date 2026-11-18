@@ -230,41 +230,83 @@ python tools/experiments/make_tables.py --eval results/E1/eval.json --out result
 
 ## 3. E2 – Định vị lại (điều khiển)
 
+E2 gồm **hai điều kiện lắp**, mỗi điều kiện có golden riêng:
+
+| Điều kiện | Rig thật | Rig ảo |
+|---|---|---|
+| `aligned` | ray và tranh gần thẳng hàng | `--mount aligned` (lệch trục 3°) |
+| `yawed25` | xoay cả giá tranh (tranh + Diamond + bảng tham chiếu) khoảng **25°** quanh trục đứng so với ray, rồi **khởi tạo golden lại** | `--mount yawed25` (lệch trục 25°) |
+
+Ưu điểm "không cần hiệu chuẩn" của I3 chỉ lộ ra khi ray lệch với tranh, và thể hiện chủ yếu qua **số lần di chuyển**. Mô phỏng 50 lượt, τ = 2 mm / 1°:
+
+| Lệch trục | C-A | C-D |
+|---|---|---|
+| 10° | 100%, 3 vòng | 96%, 3 vòng |
+| 25° | 88%, 5 vòng | 96%, 3 vòng |
+| 45° | 16%, 10 vòng | 98%, 3 vòng |
+
+Chỉ số chính, theo thứ tự:
+1. `total_moves` = vòng điều khiển + số lần di chuyển thăm dò thực tế của lượt (trung vị, CI);
+2. thời gian;
+3. tỉ lệ thành công theo GT;
+4. e_t, e_R, ROI-AFD cuối.
+
+Chi phí thăm dò được báo thêm hai cách: số lần thăm dò mỗi lượt (tổng chia số lượt), và số lượt có thăm dò. Kiểm định trong **từng** điều kiện lắp:
+* McNemar cho thành công;
+* Wilcoxon cho `total_moves`, C-A với C-D và C-B với C-D, hiệu chỉnh Holm.
+
+J (Jacobian) mặc định được thăm dò **một lần cho mỗi (tranh, nhánh)** trong một lần chạy (`--probe-reuse per_block`):
+* `never`: lượt nào cũng thăm dò (ablation trường hợp xấu nhất);
+* `ttl`: hành vi server.
+
+Mỗi nhánh có file J riêng. J của nhánh khác luôn bị từ chối.
+
 ### Rig ảo trước (chỉnh λ, δ, τ)
 
 ```bash
-python tools/experiments/run_reloc_trials.py --virtual --paintings P001,P002 --n-perturb 15 --arms C-A,C-B,C-C,C-D --seed 2027
-python tools/experiments/run_reloc_trials.py --virtual ... --rig-params '{"slider_misalign_deg": 15, "pivot_offset_mm": [0, 10, -40]}'
-python tools/experiments/eval_reloc.py --logs logs/experiments/E2/<run>.jsonl --out results/E2/virtual_eval
+python tools/experiments/run_reloc_trials.py --virtual --mount aligned --paintings P001,P002 --n-perturb 15 \
+    --arms C-A,C-B,C-C,C-D --seed 2027 --noise-from configs/noise_model.yaml --pwm-step-deg 0.586
+python tools/experiments/run_reloc_trials.py --virtual --mount yawed25 --paintings P001,P002 --n-perturb 15 \
+    --arms C-A,C-B,C-C,C-D --seed 2027 --noise-from configs/noise_model.yaml --pwm-step-deg 0.586
+python tools/experiments/eval_reloc.py --logs logs/experiments/E2/<run_aligned>.jsonl logs/experiments/E2/<run_yawed25>.jsonl \
+    --tol-t-mm <τ_t> --tol-R-deg <τ_R> --out results/E2/virtual_eval
 ```
 
-C-A/C-B trên rig ảo được cấp dấu `SIGN_*` đúng của rig lý tưởng (`--fixed-signs nominal`), để so sánh công bằng.
+* `--noise-from`: nhiễu đo pose của rig ảo lấy từ dữ liệu thật. Nguồn là `noise_model.yaml` (VCE, σ tâm camera một khung) hoặc `results/E1/eval.json` (σ trung vị của M5). Mặc định 0,3 mm quá lạc quan so với Diamond nhìn chính diện.
+* `--pwm-step-deg 0.586`: lượng tử hóa PWM của PCA9685 ở 50 Hz, xung 750–2250 µs.
+* `--rig-params` vẫn ghi đè được mọi tham số.
+* C-A/C-B trên rig ảo được cấp dấu `SIGN_*` đúng của rig lý tưởng (`--fixed-signs nominal`), để so sánh công bằng.
 
 ### Rig thật (qua server đang chạy)
 
 1. Server: `CITA_PROFILE=pbl_legacy`. Arm được chọn theo từng lượt bằng `cita_arm` trong `start-alignment`.
-2. Khởi tạo golden cho tranh, qua app hoặc `POST /workflows/{device}/start-initialization`.
-3. ROI: `python tools/experiments/define_roi.py --image <golden_left.png> --auto --size-mm 297,210 --out uploads/golden_poses/<artifact_id>/roi.json`.
-4. Thiết bị chạy firmware mới (`embed/`, hiểu `motion_profile` và `keep_pose`).
-5. Chạy:
+2. Với **mỗi** điều kiện lắp:
+   - đặt giá tranh;
+   - khởi tạo golden cho tranh (qua app, hoặc `POST /workflows/{device}/start-initialization`);
+   - tạo ROI: `python tools/experiments/define_roi.py --image <golden_left.png> --auto --size-mm 297,210 --out uploads/golden_poses/<artifact_id>/roi.json`.
+3. Thiết bị chạy firmware mới (`embed/`, hiểu `motion_profile` và `keep_pose`).
+4. Chạy (mỗi điều kiện một lần, ghi đúng nhãn):
 
 ```bash
 export CITA_API_PASSWORD=...            # mật khẩu tài khoản operator; không bao giờ ghi vào lệnh/log
-python tools/experiments/run_reloc_trials.py --device <device_code> --artifact-id <artifact_id> --paintings P001 \
+python tools/experiments/run_reloc_trials.py --mount-condition yawed25 --painting-yaw-deg 25 \
+    --device <device_code> --artifact-id <artifact_id> --paintings P001 \
     --api http://127.0.0.1:8000 --username <operator> --password-env CITA_API_PASSWORD \
-    --n-perturb 15 --arms C-A,C-B,C-C,C-D --seed 2027 --i-know-hardware-moves
-python tools/experiments/eval_reloc.py --logs logs/experiments/E2/<run>.jsonl \
+    --n-perturb 15 --arms C-A,C-B,C-C,C-D --seed 2027 --i-know-hardware-moves \
+    [--server-data-dir <DATA_DIR của server>]
+python tools/experiments/eval_reloc.py --logs logs/experiments/E2/<run>.jsonl --tol-t-mm <τ_t> --tol-R-deg <τ_R> \
     --golden-image <uploads/artifacts/<id>/golden_left_*.png> --calib data/camera_params/camera_params_lens_1.5.yaml \
-    --roi uploads/golden_poses/<id>/roi.json --out results/E2/eval
+    --roi uploads/golden_poses/<id>/roi.json --out results/E2/eval_yawed25
 python tools/experiments/make_tables.py --eval results/E2/eval.json --out results/tables/E2
 ```
 
-* Mỗi lượt gồm: `reset` → nhiễu (`move` với `float_angles`) → `start-alignment` (`cita_arm`, `cita_trial_id`, `keep_pose=true`) → chờ `alignment_status` về `complete` hoặc `failed`.
+* Ở chế độ thật, `--mount-condition` là **bắt buộc**.
+* Khi bắt đầu, tool đổi tên mọi file J của device/artifact này thành `*.stale` (trong `<DATA_DIR>/control`) và ghi việc này vào log.
+* Mỗi lượt gồm: `reset` → nhiễu (`move` với `float_angles`) → `start-alignment` (`cita_arm`, `cita_trial_id`, `keep_pose=true`, `cita_probe_reuse`, `cita_block_id`) → chờ `alignment_status` về `complete` hoặc `failed`.
 * Server ghi từng vòng điều khiển vào `logs/experiments/E2/server_<ngày>.jsonl`. Trong Docker, mount `/app/logs` nếu cần giữ log.
-* J (Jacobian) được lưu ở `<DATA_DIR>/control/jacobian_<device>_<artifact>.json` (trong Docker: volume dữ liệu), hết hạn sau `probe.ttl_s`. Muốn đo lại J thì xóa file này.
+* J được lưu ở `<DATA_DIR>/control/jacobian_<device>_<artifact>_<nhánh>.json`.
+* `eval_reloc` **bắt buộc** `--tol-t-mm`/`--tol-R-deg`, trừ khi mọi bản ghi trong log mang cùng một τ.
 * Thành công theo GT = khoảng cách giữa bảng ở ảnh cuối và bảng ở ảnh golden không vượt τ. Thành công theo bộ ước lượng được báo riêng.
-
----
 
 ## 4. E3 – Kiểm tra hư hại (tới SSIM + đầu vào AI)
 
