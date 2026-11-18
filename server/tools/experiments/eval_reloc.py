@@ -68,6 +68,21 @@ def resolve_tolerances(summaries: list[dict], tol_t_mm: float | None, tol_R_deg:
     return float(tol_t_mm if tol_t_mm is not None else t), float(tol_R_deg if tol_R_deg is not None else r)
 
 
+def tolerance_warnings(summaries: list[dict], tt: float, tr: float) -> list[str]:
+    """Warn when the controller ran with a LOOSER tau than the one used for
+    scoring: it may stop before reaching tau, so the GT success rate measures
+    the stopping rule, not the controller (e.g. profile placeholder 10 mm)."""
+    loose = sorted({(s.get("arm"), s["output"].get("tol_t_mm"), s["output"].get("tol_R_deg")) for s in summaries
+                    if (s["output"].get("tol_t_mm") or 0) > tt + 1e-9 or (s["output"].get("tol_R_deg") or 0) > tr + 1e-9},
+                   key=str)
+    if not loose:
+        return []
+    arms = ", ".join(f"{a} ({t} mm / {r} deg)" for a, t, r in loose)
+    return [f"controller tau looser than the evaluation tau ({tt} mm / {tr} deg) for {arms}: the arms may stop "
+            f"before reaching it, so GT success is not comparable. Re-run run_reloc_trials with --overrides "
+            f"'{{\"control\": {{\"tol_translation_mm\": {tt}, \"tol_rotation_deg\": {tr}}}}}' or fix tau in the C-* profiles."]
+
+
 def evaluate(rows: list[dict], *, tol_t_mm: float | None, tol_R_deg: float | None, golden=None, cal=None,
              roi_polygon=None, spec=None, seed: int = 2027, n_boot: int = 2000) -> dict:
     summaries = [r for r in rows if r.get("record_type") == "summary"]
@@ -138,7 +153,7 @@ def evaluate(rows: list[dict], *, tol_t_mm: float | None, tol_R_deg: float | Non
                                          for (a, b), (p, d) in raw.items()]
         paired[cond] = tests
     return {"conditions": conditions, "tol_t_mm": tt, "tol_R_deg": tr, "summary": summary,
-            "paired_tests": paired, "trials": trials}
+            "paired_tests": paired, "warnings": tolerance_warnings(summaries, tt, tr), "trials": trials}
 
 
 def main(argv=None) -> int:
@@ -180,6 +195,8 @@ def main(argv=None) -> int:
                           "tol_R_deg": res["tol_R_deg"],
                           "total_moves_median": {c: {a: s["total_moves"]["median"] for a, s in res["summary"][c].items()}
                                                  for c in res["conditions"]}})
+    for w in res["warnings"]:
+        print(f"WARNING: {w}", file=sys.stderr)
     for cond in res["conditions"]:
         for a, s in res["summary"][cond].items():
             print(f"[{cond}] {a}: total moves median {s['total_moves']['median']} "

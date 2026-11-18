@@ -58,6 +58,12 @@ def test_tau_is_mandatory_when_logs_disagree(tmp_path):
         eval_reloc.main(["--logs", *logs, "--out", str(tmp_path / "ev"), "--log-root", str(tmp_path)])
     assert eval_reloc.main(["--logs", *logs, "--out", str(tmp_path / "ev"), "--tol-t-mm", "5", "--tol-R-deg", "1",
                             "--n-boot", "50", "--log-root", str(tmp_path)]) == 0
+    # C-A ran with 10 mm > 5 mm evaluation tau -> explicit warning (C-D at 2 mm is fine).
+    warnings = json.loads((tmp_path / "ev.json").read_text(encoding="utf-8"))["warnings"]
+    assert len(warnings) == 1 and "C-A (10.0 mm" in warnings[0] and "C-D" not in warnings[0]
+    assert eval_reloc.main(["--logs", logs[1], "--out", str(tmp_path / "ev2"), "--tol-t-mm", "2", "--tol-R-deg", "1",
+                            "--n-boot", "50", "--log-root", str(tmp_path)]) == 0
+    assert json.loads((tmp_path / "ev2.json").read_text(encoding="utf-8"))["warnings"] == []
 
 
 def test_pwm_step_rounding():

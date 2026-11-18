@@ -338,6 +338,9 @@ python tools/experiments/make_tables.py --eval results/E2/eval.json --out result
 * Server ghi từng vòng điều khiển vào `logs/experiments/E2/server_<ngày>.jsonl`. Trong Docker, mount `/app/logs` nếu cần giữ log.
 * J được lưu ở `<DATA_DIR>/control/jacobian_<device>_<artifact>_<nhánh>.json`.
 * `eval_reloc` **bắt buộc** `--tol-t-mm`/`--tol-R-deg`, trừ khi mọi bản ghi trong log mang cùng một τ.
+  * τ của bộ điều khiển (`tol_translation_mm`/`tol_rotation_deg` trong `C-*.yaml`; hiện là giá trị giữ chỗ 10 mm / 1°) phải **không lỏng hơn** τ dùng để chấm.
+  * Nếu lỏng hơn, nhánh có thể dừng trước khi đạt τ, và tỉ lệ thành công theo GT khi đó chỉ đo quy tắc dừng. `eval_reloc` sẽ in cảnh báo và ghi vào `warnings`.
+  * Cách sửa: chốt τ trong các file `C-*`, hoặc chạy với `--overrides '{"control": {"tol_translation_mm": 2, "tol_rotation_deg": 1}}'`.
 * Thành công theo GT = khoảng cách giữa bảng ở ảnh cuối và bảng ở ảnh golden không vượt τ. Thành công theo bộ ước lượng được báo riêng.
 
 ## 4. E3 – Kiểm tra hư hại (tới SSIM + đầu vào AI)
