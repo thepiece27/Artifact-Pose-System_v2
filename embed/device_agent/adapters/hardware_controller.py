@@ -188,12 +188,15 @@ class HardwareController:
         return waypoints
 
     def release_servos(self) -> None:
-        """Ngat PWM (angle=None): servo khong giu momen, het rung/run."""
+        """Ngat PWM (angle=None) CHI cho servo pan (servo_release_after_move).
+
+        KHONG BAO GIO ngat servo tilt: tilt dang chiu tai trong luong camera, ngat
+        PWM se lam camera guc xuong. Ap dung cho ca capture_session va main_app.
+        """
         if self._kit is None:
             return
         self._kit.servo[self.servo_config.pan_channel].angle = None
-        self._kit.servo[self.servo_config.tilt_channel].angle = None
-        print("[SERVO] Da ngat PWM (servo_release_after_move)")
+        print("[SERVO] Da ngat PWM servo PAN (servo_release_after_move); TILT van giu PWM (chiu tai camera)")
 
     def move_slider_x(self, steps: int, direction: int) -> None:
         """Tinh tien slider truc X voi so buoc cho truoc."""

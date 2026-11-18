@@ -28,6 +28,7 @@ import itertools
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -40,7 +41,7 @@ HERE = Path(__file__).resolve().parent
 AGENT = HERE.parent / "device_agent"
 sys.path.insert(0, str(AGENT))
 
-from adapters.hardware_controller import HardwareController  # noqa: E402
+from adapters.hardware_controller import HardwareController, SliderConfig  # noqa: E402
 from adapters.motion_profile import MotionProfile  # noqa: E402
 
 SCHEMA = "cita.session.v1"
@@ -240,6 +241,7 @@ class SessionWriter:
         self.manifest = {"schema": SCHEMA, "session_id": session_id, "experiment": exp, **header,
                          "golden": {"frame_ids": [], "stereo_right_frame_id": None}, "frames": []}
         self.index = 0
+        self.first_frame_hook = None
         self.flush()
 
     def flush(self) -> None:
@@ -251,6 +253,8 @@ class SessionWriter:
         frame_id = f"f{self.index:05d}_{pose_label}_{rep}"
         t0 = _now()
         outcome = camera.capture(frame_id)
+        if self.index == 0 and self.first_frame_hook is not None:
+            self.first_frame_hook(outcome.image_path)
         frame = {"frame_id": frame_id, "file": outcome.image_path.name, "sha256": _sha256(outcome.image_path),
                  "role": role, "rep": rep, "t_capture": t0, "t_mono_s": time.monotonic(),
                  "odometry": rig.odometry(), "camera_metadata": outcome.metadata, **extra}
@@ -384,6 +388,155 @@ def cmd_stereo(args, rig: Rig, cam, writer: SessionWriter) -> None:
 COMMANDS = {"burst": cmd_burst, "settle": cmd_settle, "repeat": cmd_repeat, "grid": cmd_grid, "stereo": cmd_stereo}
 
 
+# ---------------------------------------------------------------------------
+# Pre-flight (R8): motion envelope, duration, disk space, explicit confirmation
+# ---------------------------------------------------------------------------
+
+FRAME_MB = {"png": 25.0, "jpg": 5.0}      # 4K estimates; re-measured on the first frame
+CAPTURE_S = 1.5                          # rough per-frame capture + save time on the Pi
+SERVO_MOVE_S = 0.5
+
+
+def planned_targets(args) -> tuple[list[dict], int]:
+    """Targets in visiting order (relative to the start position) and frame count."""
+    def t(x=0.0, z=0.0, pan=0.0, tilt=0.0):
+        return {"x_mm": x, "z_mm": z, "pan_deg": pan, "tilt_deg": tilt}
+    cmd = args.command
+    if cmd == "burst":
+        return [t()], args.n
+    if cmd == "settle":
+        out = []
+        for trial in range(args.trials):
+            sign = 1 if trial % 2 == 0 else -1
+            out.append(_axis_target(args.axis, sign * args.delta if args.alternate else args.delta))
+            if not args.alternate:
+                out.append(t())
+        return out, args.trials * (args.n_frames + 1)
+    if cmd == "repeat":
+        out = [t()]
+        sides = (1, -1) if args.both_sides else (1,)
+        for level in _floats(args.levels):
+            for side in sides:
+                for _ in range(args.reps):
+                    out += [_axis_target(args.axis, side * level), t()]
+        return out, 1 + len(_floats(args.levels)) * len(sides) * args.reps
+    if cmd == "grid":
+        combos = list(itertools.product(_floats(args.x), _floats(args.z), _floats(args.pan), _floats(args.tilt)))
+        out = [t()]
+        if args.with_stereo:
+            out += [t(x=args.baseline_mm), t()]
+        out += [t(*c) for c in combos]
+        if args.return_home:
+            out.append(t())
+        return out, args.golden_frames + (1 if args.with_stereo else 0) + len(combos) * args.frames
+    if cmd == "stereo":
+        return [t(), t(x=args.baseline_mm), t()], 2
+    return [], 0
+
+
+def plan_session(args, profile: MotionProfile) -> dict:
+    """Motion envelope (incl. backlash overshoot and stereo baseline), duration
+    and disk estimate, BEFORE any hardware is touched."""
+    targets, n_frames = planned_targets(args)
+    pulse_s = args.pulse_delay_us / 1e6
+    b_mm = profile.backlash_steps / args.steps_per_mm if profile.unidirectional else 0.0
+    pos = {"x_mm": 0.0, "z_mm": 0.0}
+    extent = {k: [0.0, 0.0] for k in ("x_mm", "z_mm", "pan_deg", "tilt_deg")}
+    steps = 0.0
+    for tgt in targets:
+        for axis in ("x_mm", "z_mm"):
+            delta = tgt[axis] - pos[axis]
+            if delta == 0:
+                continue
+            direction = 1 if delta > 0 else -1
+            far = tgt[axis]
+            travel = abs(delta)
+            if b_mm > 0 and direction * profile.approach_sign < 0:
+                far = tgt[axis] - profile.approach_sign * b_mm
+                travel += 2 * b_mm
+            extent[axis] = [min(extent[axis][0], far), max(extent[axis][1], far)]
+            steps += travel * args.steps_per_mm
+            pos[axis] = tgt[axis]
+        for axis in ("pan_deg", "tilt_deg"):
+            v = tgt[axis]
+            if profile.unidirectional and profile.backlash_deg > 0:
+                v_lo = v - profile.approach_sign * profile.backlash_deg
+                extent[axis] = [min(extent[axis][0], v, v_lo), max(extent[axis][1], v, v_lo)]
+            else:
+                extent[axis] = [min(extent[axis][0], v), max(extent[axis][1], v)]
+    settle = profile.settle_s * len(targets)
+    interval = getattr(args, "interval_s", 0.0) * n_frames + getattr(args, "rest_s", 0.0) * getattr(args, "trials", 0)
+    duration = steps * 2 * pulse_s + SERVO_MOVE_S * len(targets) + settle + CAPTURE_S * n_frames + interval
+    frame_mb = 0.3 if args.dry_run else FRAME_MB[args.format] * (args.width * args.height) / (3840 * 2160)
+    return {"n_targets": len(targets), "n_frames": n_frames, "envelope": extent,
+            "slider_steps_total": int(round(steps)), "pulse_delay_us": args.pulse_delay_us,
+            "estimated_duration_s": round(duration, 1), "frame_mb_estimate": round(frame_mb, 2),
+            "estimated_mb": round(frame_mb * n_frames, 1)}
+
+
+def check_disk(directory: Path, needed_mb: float, factor: float = 1.2) -> dict:
+    directory.mkdir(parents=True, exist_ok=True)
+    free_mb = shutil.disk_usage(directory).free / 1e6
+    ok = free_mb >= factor * needed_mb
+    return {"free_mb": round(free_mb, 1), "needed_mb": round(needed_mb, 1), "factor": factor, "ok": ok}
+
+
+def print_plan(plan: dict, disk: dict) -> None:
+    env = plan["envelope"]
+    print("[PLAN] Vung di chuyen so voi vi tri luc khoi dong (gom overshoot bu ro va baseline stereo):")
+    print(f"[PLAN]   X {env['x_mm'][0]:+.1f} .. {env['x_mm'][1]:+.1f} mm | Z {env['z_mm'][0]:+.1f} .. {env['z_mm'][1]:+.1f} mm"
+          f" | pan {env['pan_deg'][0]:+.2f} .. {env['pan_deg'][1]:+.2f} deg | tilt {env['tilt_deg'][0]:+.2f} .. "
+          f"{env['tilt_deg'][1]:+.2f} deg")
+    print(f"[PLAN]   {plan['n_targets']} vi tri, {plan['n_frames']} khung, {plan['slider_steps_total']} buoc slider"
+          f" (pulse {plan['pulse_delay_us']} us) ~ {plan['estimated_duration_s'] / 60:.1f} phut")
+    print(f"[PLAN]   Dung luong uoc tinh {plan['estimated_mb']:.0f} MB (trong: {disk['free_mb']:.0f} MB, can "
+          f">= {disk['factor']} x)")
+
+
+def confirm_envelope(args) -> bool:
+    if args.confirm_envelope:
+        return True
+    try:
+        answer = input("Go 'yes' de dong co phan cung voi vung di chuyen tren: ")
+    except EOFError:
+        return False
+    return answer.strip().lower() == "yes"
+
+
+# ---------------------------------------------------------------------------
+# AWB measurement (R8)
+# ---------------------------------------------------------------------------
+
+def load_awb(args) -> tuple[list[float], dict]:
+    """ColourGains from --awb-from (measured) or --awb; defaults only in dry-run."""
+    if args.awb_from:
+        data = json.loads(Path(args.awb_from).read_text(encoding="utf-8"))
+        gains = [float(v) for v in data["colour_gains"]]
+        return gains, {"source": "awb_from", "file": str(args.awb_from), **{k: data.get(k) for k in
+                                                                             ("lux", "colour_temperature", "t_measured")}}
+    if args.awb:
+        return [float(v) for v in args.awb.split(",")], {"source": "cli"}
+    if args.dry_run:
+        return [1.2, 1.5], {"source": "dry_run_default"}
+    raise SystemExit("Real capture needs --awb r,b or --awb-from awb_gains.json (run the 'awb' sub-command "
+                     "under the session lighting first)")
+
+
+def cmd_awb(args) -> int:
+    if args.dry_run:
+        meas = {"colour_gains": [1.85, 1.62], "lux": 320.0, "colour_temperature": 4100.0, "fake": True}
+    else:  # pragma: no cover - real camera only
+        from adapters.camera_manager import measure_awb
+        meas = measure_awb(seconds=args.seconds, lens_position=args.lens_position)
+    out = Path(args.awb_out or (Path(args.out) / "awb_gains.json"))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    record = {"schema": "cita.awb.v1", **meas, "auto_seconds": args.seconds, "lighting": args.lighting,
+              "t_measured": _now(), "tool_version": _git_commit()}
+    out.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    print(f"AWB: ColourGains={meas['colour_gains']} Lux={meas.get('lux')} CT={meas.get('colour_temperature')} -> {out}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", default=str(AGENT / "data" / "sessions"))
@@ -412,7 +565,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lens-position", type=float, default=1.5)
     p.add_argument("--exposure-us", type=int, default=20000)
     p.add_argument("--gain", type=float, default=1.0)
-    p.add_argument("--awb", default="1.2,1.5", help="ColourGains red,blue")
+    p.add_argument("--awb", default=None, help="ColourGains red,blue (dry-run default 1.2,1.5)")
+    p.add_argument("--awb-from", default=None, help="awb_gains.json written by the 'awb' sub-command")
+    p.add_argument("--confirm-envelope", action="store_true",
+                   help="skip the interactive 'yes' after the motion envelope is printed")
+    p.add_argument("--pulse-delay-us", type=int, default=500,
+                   help="stepper pulse half-period (us); 500 = old behaviour, faster values are tested in E0.4")
     p.add_argument("--format", default="png", choices=("png", "jpg"))
     p.add_argument("--width", type=int, default=3840)
     p.add_argument("--height", type=int, default=2160)
@@ -446,6 +604,9 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--baseline-mm", type=float, default=100.0)
     st = sub.add_parser("stereo")
     st.add_argument("--baseline-mm", type=float, default=100.0)
+    a = sub.add_parser("awb", help="measure ColourGains once under the session lighting (auto AWB)")
+    a.add_argument("--seconds", type=float, default=3.0)
+    a.add_argument("--awb-out", default=None, help="default: <out>/awb_gains.json")
     return p
 
 
@@ -481,15 +642,33 @@ def _join_negative_values(argv: list[str]) -> list[str]:
 def main(argv=None) -> int:
     argv = _join_negative_values(list(sys.argv[1:] if argv is None else argv))
     args = build_parser().parse_args(argv)
+    if args.command == "awb":
+        return cmd_awb(args)
     if not args.dry_run and not args.i_know_hardware_moves:
         print("Refusing to move real hardware without --i-know-hardware-moves (use --dry-run to test).",
               file=sys.stderr)
         return 2
+    try:
+        colour_gains, awb_info = load_awb(args)
+    except SystemExit as exc:
+        print(exc, file=sys.stderr)
+        return 4
     profile = motion_profile_from_args(args)
+    plan = plan_session(args, profile)
+    disk = check_disk(Path(args.out), plan["estimated_mb"])
+    print_plan(plan, disk)
+    if not disk["ok"]:
+        print(f"Not enough free disk space: {disk['free_mb']:.0f} MB < {disk['factor']} x {disk['needed_mb']:.0f} MB",
+              file=sys.stderr)
+        return 5
+    if not args.dry_run and not confirm_envelope(args):
+        print("Cancelled: motion envelope not confirmed (type 'yes' or pass --confirm-envelope).", file=sys.stderr)
+        return 3
+    slider_cfg = SliderConfig(pulse_delay=args.pulse_delay_us / 1e6)
     if args.dry_run:
-        hw = HardwareController(kit=FakeKit(), gpio=FakeGPIO(), sleep=lambda s: None)
+        hw = HardwareController(slider_config=slider_cfg, kit=FakeKit(), gpio=FakeGPIO(), sleep=lambda s: None)
     else:  # pragma: no cover - real rig only
-        hw = HardwareController()
+        hw = HardwareController(slider_config=slider_cfg)
     rig = Rig(hw, profile, steps_per_mm=args.steps_per_mm, max_travel_mm=args.max_travel_mm,
               max_servo_offset_deg=args.max_servo_offset_deg, dry_run=args.dry_run)
     session_id = args.session_id or (
@@ -499,14 +678,24 @@ def main(argv=None) -> int:
               "tool_version": _git_commit(), "tool": "embed/tools/capture_session.py",
               "command": args.command, "argv": argv,
               "dry_run": bool(args.dry_run), "seed": args.seed, "steps_per_mm": args.steps_per_mm,
-              "motion_profile": profile.to_dict(),
+              "pulse_delay_us": args.pulse_delay_us, "motion_profile": profile.to_dict(),
+              "plan": plan, "disk_check": disk,
               "camera": {"width": args.width, "height": args.height, "lens_position": args.lens_position,
                          "exposure_time_us": args.exposure_us, "analogue_gain": args.gain,
-                         "colour_gains": [float(v) for v in args.awb.split(",")],
+                         "colour_gains": colour_gains, "awb": awb_info,
                          "calibration_file": f"camera_params_lens_{args.lens_position:.1f}.yaml",
                          "calibration_sha256": None},
               "t_start": _now()}
     writer = SessionWriter(Path(args.out), args.exp, session_id, header)
+
+    def first_frame_disk_check(path: Path) -> None:
+        measured_mb = path.stat().st_size / 1e6
+        again = check_disk(writer.dir, measured_mb * max(plan["n_frames"] - 1, 0))
+        writer.manifest["disk_check_first_frame"] = {**again, "frame_mb_measured": round(measured_mb, 3)}
+        if not again["ok"]:
+            raise RuntimeError(f"Not enough disk for the remaining frames ({again['free_mb']:.0f} MB free, "
+                               f"{again['needed_mb']:.0f} MB needed x {again['factor']})")
+    writer.first_frame_hook = first_frame_disk_check
     if args.dry_run:
         cam = FakeCamera(writer.dir, hw, seed=args.seed, image_format=args.format)
         rig.on_move = lambda: setattr(cam, "t_last_move", time.monotonic())
@@ -514,8 +703,7 @@ def main(argv=None) -> int:
         from adapters.camera_manager import ManualCameraSession
         cam = ManualCameraSession(writer.dir, width=args.width, height=args.height,
                                   lens_position=args.lens_position, exposure_time_us=args.exposure_us,
-                                  analogue_gain=args.gain,
-                                  colour_gains=[float(v) for v in args.awb.split(",")],
+                                  analogue_gain=args.gain, colour_gains=colour_gains,
                                   image_format=args.format)
     try:
         with cam:

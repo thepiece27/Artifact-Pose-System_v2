@@ -359,3 +359,32 @@ class ManualCameraSession:
                 meta[key] = list(value) if isinstance(value, (list, tuple)) else value
         meta["requested"] = self.requested_controls()
         return CaptureOutcome(image_path=image_path, metadata=meta)
+
+
+def measure_awb(seconds: float = 3.0, lens_position: float = 1.5, width: int = DEFAULT_CAPTURE_WIDTH,
+                height: int = DEFAULT_CAPTURE_HEIGHT) -> dict[str, Any]:
+    """Run auto white balance for ``seconds`` under the real lighting and read
+    the converged ColourGains (+ Lux, ColourTemperature) once. The CITA sessions
+    then use these gains with AWB disabled (``capture_session.py --awb-from``)."""
+    picamera2_module = importlib.import_module("picamera2")
+    libcamera_module = importlib.import_module("libcamera")
+    controls = getattr(libcamera_module, "controls")
+    picam2 = getattr(picamera2_module, "Picamera2")()
+    try:
+        picam2.configure(picam2.create_still_configuration(main={"size": (width, height), "format": "RGB888"}))
+        picam2.start()
+        picam2.set_controls({"AwbEnable": True, "AeEnable": True, "AfMode": controls.AfModeEnum.Manual,
+                             "LensPosition": float(lens_position)})
+        time.sleep(max(0.5, float(seconds)))
+        meta = picam2.capture_metadata() or {}
+    finally:
+        try:
+            picam2.stop()
+        finally:
+            picam2.close()
+    gains = meta.get("ColourGains")
+    if not gains or len(gains) != 2:
+        raise RuntimeError("Camera did not report ColourGains")
+    return {"colour_gains": [float(gains[0]), float(gains[1])], "lux": meta.get("Lux"),
+            "colour_temperature": meta.get("ColourTemperature"), "exposure_time_us": meta.get("ExposureTime"),
+            "analogue_gain": meta.get("AnalogueGain")}

@@ -91,8 +91,10 @@ def test_unidirectional_approach_sequence_and_release():
     assert kit.writes == [(0, 106.5), (1, 36.0), (0, 108.5), (1, 36.0)]
     kit.writes.clear()
     assert hw.approach_pan_tilt(109.0, 36.0, prof) == [(109.0, 36.0)]
+    kit.writes.clear()
     hw.release_servos()
-    assert kit.writes[-2:] == [(0, None), (1, None)]
+    # R8: only the pan PWM is released; tilt carries the camera and is never released.
+    assert kit.writes == [(0, None)]
     # Legacy profile: exactly one rounded command.
     kit.writes.clear()
     assert hw.approach_pan_tilt(100.4, 30.0, MotionProfile()) == [(100.4, 30.0)]
@@ -138,7 +140,8 @@ def test_compound_move_with_i2_profile(monkeypatch):
                                       "workflow": {"auto_alignment_loop": True}})
     assert kit.writes[:2] == [(0, 106.6), (1, 35.6)]      # overshoot on yaw, pitch approached from below
     assert kit.writes[2:4] == [(0, 108.6), (1, 35.6)]
-    assert kit.writes[-2:] == [(0, None), (1, None)]       # PWM released after settling
+    assert kit.writes[-1] == (0, None)                      # pan PWM released after settling (main_app)
+    assert (1, None) not in kit.writes                      # R8: tilt is never released
     assert 1.2 in sleeps
     assert info["commanded"]["yaw_deg"] == pytest.approx(108.6)
     assert info["motion_profile"]["settle_s"] == 1.2
