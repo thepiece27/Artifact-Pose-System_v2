@@ -201,10 +201,12 @@ def run_alignment(port: RigPort, session: AlignmentSession, *, logger=None, log_
 
 def build_session(profile, settings=None, *, arm: str | None = None, device_id: str = "dev",
                   artifact_id: str = "art", server_root=None, reuse_jacobian: bool = True,
-                  clock=time.time) -> AlignmentSession:
+                  clock=time.time, probe_reuse: str | None = None, block_id: str | None = None) -> AlignmentSession:
+    """``probe_reuse`` (ttl | per_block | never) overrides ``control.probe.reuse``;
+    ``block_id`` identifies the E2 block (run, painting, arm) for ``per_block``."""
     controller = make_controller(profile, settings, device_id=device_id, artifact_id=artifact_id,
-                                 server_root=server_root, clock=clock)
-    controller.reset({"reuse_jacobian": reuse_jacobian})
+                                 server_root=server_root, clock=clock, probe_reuse=probe_reuse)
+    controller.reset({"reuse_jacobian": reuse_jacobian, "probe_reuse": probe_reuse, "block_id": block_id})
     return AlignmentSession(controller, LoopConfig.from_profile(profile, settings), arm=arm or profile.name)
 
 

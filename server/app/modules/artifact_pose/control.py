@@ -163,10 +163,16 @@ class FixedMappingController:
 class JacobianController:
     name = "jacobian"
 
-    def __init__(self, cfg, *, store_path: str | Path | None = None, clock=time.time) -> None:
+    def __init__(self, cfg, *, store_path: str | Path | None = None, clock=time.time, meta: dict | None = None,
+                 probe_reuse: str | None = None) -> None:
+        """``meta`` = {arm, pose_method, profile_hash} written into / checked against
+        the J file; ``probe_reuse`` overrides ``cfg.probe.reuse`` (ttl | per_block | never)."""
         self.cfg = cfg
         self.store_path = Path(store_path) if store_path else None
         self.clock = clock
+        self.meta = dict(meta or {})
+        self.probe_reuse = probe_reuse or getattr(cfg.probe, "reuse", "ttl")
+        self.block_id = None
         self.delta = np.array([cfg.probe.delta.x_mm, cfg.probe.delta.z_mm,
                                cfg.probe.delta.yaw_deg, cfg.probe.delta.pitch_deg], dtype=float)
         self.max_step = np.array([cfg.max_step.x_mm, cfg.max_step.z_mm, cfg.max_step.yaw_deg,
@@ -191,7 +197,14 @@ class JacobianController:
         self.err_prev = None
         self.J_source = None
         self.events: list[dict] = []
-        if context and context.get("reuse_jacobian", True):
+        if not context:
+            return
+        if context.get("probe_reuse"):
+            self.probe_reuse = context["probe_reuse"]
+        if context.get("reuse_jacobian", True) is False:
+            self.probe_reuse = "never"
+        self.block_id = context.get("block_id")
+        if self.probe_reuse != "never":
             self._try_load()
 
     def to_state(self) -> dict:
@@ -199,9 +212,12 @@ class JacobianController:
         return {"type": self.name, "mode": self.mode, "probe_step": self.probe_step, "J": arr(self.J),
                 "J_probe": arr(self.J_probe), "e_prev": arr(self.e_prev), "e_base": arr(self.e_base),
                 "e_plus": arr(self.e_plus), "dq_prev": arr(self.dq_prev), "q": arr(self.q),
-                "worse_count": self.worse_count, "err_prev": self.err_prev, "J_source": self.J_source}
+                "worse_count": self.worse_count, "err_prev": self.err_prev, "J_source": self.J_source,
+                "block_id": self.block_id, "probe_reuse": self.probe_reuse}
 
     def load_state(self, data: dict) -> None:
+        self.block_id = data.get("block_id")
+        self.probe_reuse = data.get("probe_reuse") or self.probe_reuse
         arr = lambda k: None if data.get(k) is None else np.asarray(data[k], dtype=float)  # noqa: E731
         self.mode, self.probe_step = data["mode"], int(data["probe_step"])
         self.J = arr("J") if data.get("J") is not None else np.zeros((6, 4))
@@ -212,16 +228,41 @@ class JacobianController:
 
     # -- persistence -------------------------------------------------------------
     def _try_load(self) -> None:
+        """Re-use a stored J according to ``probe_reuse``:
+
+        * ``ttl``: same arm, age <= probe.ttl_s (server default);
+        * ``per_block``: same arm AND same ``block_id`` (E2: one probe per
+          (painting, arm) block of a run_reloc_trials run), TTL ignored;
+        * ``never``: not called.
+        A J measured by another arm (other pose estimator) is always rejected.
+        """
         if self.store_path is None or not self.store_path.exists():
             return
         try:
             data = json.loads(self.store_path.read_text(encoding="utf-8"))
             J = np.asarray(data["J"], dtype=float)
+            if self.meta.get("arm") and data.get("arm") != self.meta["arm"]:
+                self.events.append({"event": "jacobian_rejected_other_arm", "file_arm": data.get("arm"),
+                                    "arm": self.meta["arm"]})
+                return
             age = self.clock() - float(data["t_measured"])
             cond = self.condition(J)
-            if J.shape == (6, 4) and age <= self.cfg.probe.ttl_s and cond <= self.cfg.probe.max_condition:
-                self.J, self.J_probe, self.mode, self.J_source = J, J.copy(), "control", "stored"
-                self.events.append({"event": "jacobian_reused", "age_s": age, "condition": cond})
+            if J.shape != (6, 4) or cond > self.cfg.probe.max_condition:
+                self.events.append({"event": "jacobian_rejected_condition", "condition": cond})
+                return
+            if self.probe_reuse == "per_block":
+                ok = self.block_id is not None and data.get("block_id") == self.block_id
+                reason = "jacobian_rejected_other_block"
+            else:
+                ok = age <= self.cfg.probe.ttl_s
+                reason = "jacobian_rejected_expired"
+            if not ok:
+                self.events.append({"event": reason, "age_s": age, "file_block_id": data.get("block_id"),
+                                    "block_id": self.block_id})
+                return
+            self.J, self.J_probe, self.mode, self.J_source = J, J.copy(), "control", "stored"
+            self.events.append({"event": "jacobian_reused", "age_s": age, "condition": cond,
+                                "probe_reuse": self.probe_reuse, "block_id": self.block_id})
         except (OSError, ValueError, KeyError) as exc:
             self.events.append({"event": "jacobian_load_failed", "error": str(exc)})
 
@@ -229,10 +270,13 @@ class JacobianController:
         if self.store_path is None:
             return
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"schema": "cita.jacobian.v1", "J": self.J.tolist(), "condition": self.condition(self.J),
+        payload = {"schema": "cita.jacobian.v2", "J": self.J.tolist(), "condition": self.condition(self.J),
                    "t_measured": self.clock(), "delta": self.delta.tolist(), "scheme": self.cfg.probe.scheme,
                    "scale": self.scale.tolist(), "axes_q": list(AXES),
-                   "rows_e": ["cx/s_t", "cy/s_t", "cz/s_t", "thx/s_R", "thy/s_R", "thz/s_R"], **extra}
+                   "rows_e": ["cx/s_t", "cy/s_t", "cz/s_t", "thx/s_R", "thy/s_R", "thz/s_R"],
+                   "arm": self.meta.get("arm"), "pose_method": self.meta.get("pose_method"),
+                   "profile_hash": self.meta.get("profile_hash"), "block_id": self.block_id,
+                   "probe_reuse": self.probe_reuse, **extra}
         tmp = self.store_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=1), encoding="utf-8")
         tmp.replace(self.store_path)
@@ -349,7 +393,7 @@ class JacobianController:
 
 
 def make_controller(profile, settings=None, *, device_id: str = "dev", artifact_id: str = "art",
-                    server_root: str | Path | None = None, clock=time.time):
+                    server_root: str | Path | None = None, clock=time.time, probe_reuse: str | None = None):
     """Controller of a profile; None fields of ``control`` fall back to Settings."""
     c = profile.control
     if c.controller == "fixed_mapping":
@@ -362,8 +406,10 @@ def make_controller(profile, settings=None, *, device_id: str = "dev", artifact_
             sign_pan=signs.pan if signs else getattr(settings, "sign_rotate_pan", -1),
             sign_tilt=signs.tilt if signs else getattr(settings, "sign_rotate_tilt", -1))
     store = jacobian_store_dir(c.jacobian_dir, settings, server_root) / \
-        f"jacobian_{_safe(device_id)}_{_safe(artifact_id)}.json"
-    return JacobianController(c, store_path=store, clock=clock)
+        f"jacobian_{_safe(device_id)}_{_safe(artifact_id)}_{_safe(profile.name)}.json"
+    return JacobianController(c, store_path=store, clock=clock, probe_reuse=probe_reuse,
+                              meta={"arm": profile.name, "pose_method": profile.pose.method,
+                                    "profile_hash": profile.profile_hash})
 
 
 def jacobian_store_dir(jacobian_dir: str, settings=None, server_root: str | Path | None = None) -> Path:

@@ -27,6 +27,8 @@ class StartAlignmentRequest(BaseModel):
     cita_arm: str | None = Field(default=None, pattern=r"^C-[A-D]$")
     cita_trial_id: str | None = Field(default=None, max_length=80, pattern=r"^[A-Za-z0-9_.:-]+$")
     keep_pose: bool | None = None
+    cita_probe_reuse: str | None = Field(default=None, pattern=r"^(ttl|per_block|never)$")
+    cita_block_id: str | None = Field(default=None, max_length=160, pattern=r"^[A-Za-z0-9_.:-]+$")
 
 
 class StartInitializationRequest(BaseModel):

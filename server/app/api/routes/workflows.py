@@ -165,6 +165,8 @@ def start_alignment(
             "auto_alignment_loop": True,
             **({"cita_arm": req.cita_arm} if req.cita_arm else {}),
             **({"cita_trial_id": req.cita_trial_id} if req.cita_trial_id else {}),
+            **({"cita_probe_reuse": req.cita_probe_reuse} if req.cita_probe_reuse else {}),
+            **({"cita_block_id": req.cita_block_id} if req.cita_block_id else {}),
         },
     )
     if req.keep_pose is not None:

@@ -51,6 +51,20 @@ class RigParams:
     noise_rot_deg: float = 0.03
     steps_per_mm: float = 800.0
     golden_distance_m: float = 0.65
+    # PCA9685 at 50 Hz, 750-2250 us over 180 deg: 4.88 us/tick -> 0.586 deg per PWM step.
+    # 0 = no PWM quantisation. Applied to the ABSOLUTE servo angle (home + command).
+    pwm_step_deg: float = 0.0
+    home_yaw_deg: float = 110.0
+    home_pitch_deg: float = 35.0
+
+    @classmethod
+    def preset(cls, mount: str, **overrides) -> "RigParams":
+        """E2 mount conditions: ``aligned`` (rail ~ painting, 3 deg) and ``yawed25``
+        (painting stand rotated 25 deg about the vertical axis w.r.t. the rail)."""
+        presets = {"aligned": {"slider_misalign_deg": 3.0}, "yawed25": {"slider_misalign_deg": 25.0}}
+        if mount not in presets:
+            raise ValueError(f"Unknown mount preset {mount!r}; known: {sorted(presets)}")
+        return cls(**{**presets[mount], **overrides})
 
     @classmethod
     def ideal(cls) -> "RigParams":
@@ -60,19 +74,27 @@ class RigParams:
 
 
 class _Servo:
-    """Dead-band + backlash (play) + optional integer quantisation."""
+    """Dead-band + backlash (play) + integer quantisation (legacy) + PWM step."""
 
-    def __init__(self, deadband: float, backlash: float, scale_error: float) -> None:
+    def __init__(self, deadband: float, backlash: float, scale_error: float, *, home_deg: float = 0.0,
+                 pwm_step_deg: float = 0.0) -> None:
         self.cmd = 0.0         # commanded angle (relative to home), as the device stores it
-        self.actual = 0.0      # physical output angle
+        self.actual = 0.0      # physical output angle relative to the (quantised) home
         self.deadband, self.backlash, self.scale = deadband, backlash, scale_error
+        self.home, self.pwm_step = float(home_deg), float(pwm_step_deg)
+
+    def _pwm(self, absolute_deg: float) -> float:
+        if self.pwm_step <= 0:
+            return absolute_deg
+        return round(absolute_deg / self.pwm_step) * self.pwm_step
 
     def command(self, target: float, float_angles: bool) -> None:
         target = float(target) if float_angles else float(int(round(target)))
         if abs(target - self.cmd) < 1e-12:
             return
         self.cmd = target
-        desired = target * (1.0 + self.scale)
+        # The PCA9685 can only produce whole PWM ticks of the ABSOLUTE angle.
+        desired = self._pwm(self.home + target * (1.0 + self.scale)) - self._pwm(self.home)
         delta = desired - self.actual
         if abs(delta) <= self.deadband:
             return
@@ -92,8 +114,10 @@ class VirtualRig:
         self.pivot = np.asarray(self.p.pivot_offset_mm, dtype=np.float64) / 1000.0
         self.x_steps = 0
         self.z_steps = 0
-        self.pan = _Servo(self.p.deadband_deg, self.p.backlash_deg, self.p.servo_scale_error)
-        self.tilt = _Servo(self.p.deadband_deg, self.p.backlash_deg, self.p.servo_scale_error)
+        self.pan = _Servo(self.p.deadband_deg, self.p.backlash_deg, self.p.servo_scale_error,
+                          home_deg=self.p.home_yaw_deg, pwm_step_deg=self.p.pwm_step_deg)
+        self.tilt = _Servo(self.p.deadband_deg, self.p.backlash_deg, self.p.servo_scale_error,
+                           home_deg=self.p.home_pitch_deg, pwm_step_deg=self.p.pwm_step_deg)
         self.n_moves = 0
 
     # -- kinematics --------------------------------------------------------------
@@ -223,3 +247,34 @@ class VirtualPort:
             return self.rig.measure()
         imgs = [self.rig.render(self.golden_image, self.K) for _ in range(self.frames)]
         return self.estimator(imgs)
+
+
+def noise_from_file(path) -> dict:
+    """Pose-measurement noise for the virtual rig from measured data (R7):
+
+    * a noise model (``cita.noise_model.v2``, VCE) -> ``pose_sigma_center_mm_median``
+      and ``pose_sigma_rot_deg_median`` (single frame at the VCE solution);
+    * an E1 ``eval_pose`` JSON -> median camera-centre / rotation sigma of M5.
+    Returns {"noise_c_mm", "noise_rot_deg", "source"} (per-axis means).
+    """
+    import json
+    from pathlib import Path
+    path = Path(path)
+    text = path.read_text(encoding="utf-8")
+    if path.suffix in (".yaml", ".yml"):
+        import yaml
+        data = yaml.safe_load(text) or {}
+        if not str(data.get("schema", "")).startswith("cita.noise_model"):
+            raise ValueError(f"{path}: not a CITA noise model")
+        c, r = data.get("pose_sigma_center_mm_median"), data.get("pose_sigma_rot_deg_median")
+        if not c or not r:
+            raise ValueError(f"{path}: no pose_sigma_* (re-run e0_noise.py --estimator vce)")
+        return {"noise_c_mm": float(np.mean(c)), "noise_rot_deg": float(np.mean(r)), "source": f"noise_model:{path.name}"}
+    data = json.loads(text)
+    if data.get("experiment") != "E1":
+        raise ValueError(f"{path}: expected an E1 eval_pose JSON")
+    m5 = (data.get("summary") or {}).get("M5") or {}
+    c, r = m5.get("sigma_center_mm_median"), m5.get("sigma_rot_deg_median")
+    if not c or not r:
+        raise ValueError(f"{path}: summary.M5 has no sigma_center_mm_median / sigma_rot_deg_median")
+    return {"noise_c_mm": float(np.mean(c)), "noise_rot_deg": float(np.mean(r)), "source": f"E1_eval:{path.name}"}

@@ -120,9 +120,13 @@ class ProbeSection:
     delta: ProbeDelta = field(default_factory=ProbeDelta)
     ttl_s: float = 3600.0
     max_condition: float = 1e6
+    # ttl: re-use J of the same arm within ttl_s (server default); per_block: one
+    # probe per (painting, arm) block of an E2 run; never: probe every trial.
+    reuse: str = "ttl"
 
     def __post_init__(self):
         _choice(self.scheme, "control.probe.scheme", ("chained_forward", "central"))
+        _choice(self.reuse, "control.probe.reuse", ("ttl", "per_block", "never"))
         _positive(self.ttl_s, "control.probe.ttl_s", allow_zero=True)
         _positive(self.max_condition, "control.probe.max_condition")
 

@@ -42,7 +42,7 @@ def test_make_controller_falls_back_to_settings(tmp_path):
     ctl = make_controller(load_profile("C-A", overrides={"control": {"signs": {"x": 1, "z": 1, "pan": 1, "tilt": 1}}}), settings)
     assert ctl.sign_z == 1
     jac = make_controller(load_profile("C-C"), settings, device_id="d1", artifact_id="a/1", server_root=tmp_path)
-    assert isinstance(jac, JacobianController) and jac.store_path.name == "jacobian_d1_a-1.json"
+    assert isinstance(jac, JacobianController) and jac.store_path.name == "jacobian_d1_a-1_C-C.json"
 
 
 @pytest.mark.parametrize("scheme,moves", [("chained_forward", 4), ("central", 8)])
@@ -67,7 +67,7 @@ def test_jacobian_probe_recovers_linear_plant(tmp_path, scheme, moves):
     assert n_probe == moves
     assert np.allclose(ctl.J, J_true, atol=1e-9)
     saved = json.loads((tmp_path / "J.json").read_text())
-    assert saved["schema"] == "cita.jacobian.v1" and np.allclose(saved["J"], J_true)
+    assert saved["schema"] == "cita.jacobian.v2" and np.allclose(saved["J"], J_true)
     # Re-use within TTL, re-probe when expired.
     fresh = JacobianController(prof.control, store_path=tmp_path / "J.json")
     fresh.reset({"reuse_jacobian": True})
@@ -163,4 +163,4 @@ def test_jacobian_store_location(tmp_path):
     assert jacobian_store_dir(str(tmp_path / "abs"), settings) == tmp_path / "abs"
     assert jacobian_store_dir("data/control", None, tmp_path) == tmp_path / "data" / "control"
     ctl = make_controller(load_profile("C-C"), settings, device_id="d", artifact_id="a")
-    assert ctl.store_path == tmp_path / "data_dir" / "control" / "jacobian_d_a.json"
+    assert ctl.store_path == tmp_path / "data_dir" / "control" / "jacobian_d_a_C-C.json"

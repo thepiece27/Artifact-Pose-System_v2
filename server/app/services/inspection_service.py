@@ -825,6 +825,8 @@ class InspectionService:
         entry = self._cita_sessions.get(key)
         if entry is None or entry.get("trial_id") != trial_id or entry.get("arm") != profile.name:
             session = build_session(profile, self._settings, arm=profile.name, device_id=device_id,
+                                    probe_reuse=workflow.get("cita_probe_reuse") or None,
+                                    block_id=workflow.get("cita_block_id") or None,
                                     artifact_id=artifact_id)
             entry = {"trial_id": trial_id, "arm": profile.name, "frames": [], "t_start": time.time()}
         else:
