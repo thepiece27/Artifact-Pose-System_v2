@@ -45,6 +45,12 @@ c   = −ΔRᵀ · Δt                    # tâm camera hiện tại trong hệ 
 θ   = rotvec(ΔR)                   # (rad; log bằng độ)
 ```
 
+> **Quy ước dấu của θ (v1.2).** `θ = rotvec(ΔR)` mang **dấu ngược** với phép quay vật lý của camera. Lý do: ΔR ánh xạ *tọa độ* từ hệ golden sang hệ hiện tại, tức ΔR = R_vật lýᵀ.
+> Ví dụ (đã kiểm bằng số với `motion.py`): camera pan **+2°** quanh trục y của nó thì `θ = (0, −2°, 0)`.
+> * Bộ điều khiển Jacobian (C-C/C-D) **không** phụ thuộc dấu này, vì J được thăm dò từ chính các phép đo.
+> * Ánh xạ cố định (C-A/C-B) dùng `SIGN_*` để bù dấu.
+> * Bảng và hình trong paper phải ghi rõ đang dùng quy ước nào. Nếu báo "góc quay của camera" thì đổi dấu: `−θ`.
+
 * Cài đặt: `app/modules/artifact_pose/motion.py` (`relative_motion`, `camera_center_in_golden`, `pose_errors`).
 * M2 (không marker) cho ΔT trực tiếp vì bản đồ 3D nằm ở hệ camera golden (trái).
 * GT (bảng ChArUco tham chiếu) dùng **đúng công thức trên** với pose bảng: `ΔT_gt = T_cb(c) · T_cb(g)⁻¹`. ΔT không phụ thuộc gốc/hướng của hệ bảng, nên bảng có thể đặt ở bất cứ đâu trên mặt phẳng tranh miễn là đứng yên.

@@ -87,7 +87,31 @@ File code cũ bị sửa (mọi thay đổi đều giữ mặc định cũ):
    * Các công cụ replay đặt `cv2.setRNGSeed(seed)` trước mỗi cặp, test hồi quy đặt về seed 0.
    * Server sản xuất vẫn giữ hành vi cũ.
 4. **Dấu `SIGN_*` mặc định mâu thuẫn**: `config.py` mặc định −1, `docker-compose.yml` mặc định +1, `docs/04` ghi +1. Nghĩa là "baseline" của ánh xạ cố định khác nhau tùy cách triển khai. Cần chốt bằng đo đạc (E0.4) trước E2.
-5. **Lượng tử hóa servo 1° chặn hội tụ góc nhỏ.** Trên rig ảo với τ = 2 mm / 0,2°, C-A và C-C (không I2) không đạt, còn C-B và C-D (có góc float) đạt 99–100%. Phần tịnh tiến của C-C vẫn tốt (0,3 mm). Đây là lý lẽ định lượng cho I2.
+5. ~~**Lượng tử hóa servo 1° chặn hội tụ góc nhỏ.** Trên rig ảo với τ = 2 mm / 0,2°, C-A và C-C (không I2) không đạt, còn C-B và C-D (có góc float) đạt 99–100%. Phần tịnh tiến của C-C vẫn tốt (0,3 mm). Đây là lý lẽ định lượng cho I2.~~
+
+   **Đính chính (v1.2): nhận định trên quy sai nguyên nhân.**
+   * Lượng tử hóa servo **không** cản việc quay về golden, vì golden nằm đúng góc home (số nguyên, và đúng một tick PWM).
+   * Thứ thực sự giới hạn góc nhỏ là **rơ và vùng chết**:
+     * Khi quay về, rơ để lại phần dư ±rơ/2.
+     * Phần dư này nhỏ hơn bước lệnh nhỏ nhất (1° với góc nguyên, 0,586° với PWM), nên không bù được.
+     * Vùng chết thì nuốt luôn các lệnh sửa nhỏ.
+   * Rơ và vùng chết phải đo ở E0.4 trước khi chốt τ_R.
+
+   Mô phỏng: 2 tranh × 25 nhiễu × 4 nhánh, seed 2027, τ_t = 2 mm. Mỗi ô ghi tỉ lệ thành công theo GT của C-A / C-B / C-C / C-D:
+
+   | Rig ảo | τ_R | PWM 0 | PWM 0,586° |
+   |---|---|---|---|
+   | aligned, rơ 0,4°, vùng chết 0,2° (mặc định) | 1° | 94 / 90 / 94 / 92% | 92 / 92 / 98 / 94% |
+   | yawed25, rơ 0,4°, vùng chết 0,2° | 1° | 100 / 100 / 96 / 96% | 100 / 100 / 98 / 98% |
+   | aligned, **không rơ, không vùng chết** | 0,2° | 90 / 90 / 96 / 98% | 92 / 92 / 58 / 96% |
+   | aligned, rơ 0,4°, vùng chết 0,2° | 0,2° | 0 / 94 / 0 / 92% | 0 / 0 / 0 / 0% |
+
+   Đọc bảng:
+   * Ở τ_R = 1°, bước PWM 0,586° không làm giảm thành công.
+   * Khi không có rơ và vùng chết, C-A (góc nguyên) vẫn đạt 90% ở τ_R = 0,2°. Vậy lượng tử hóa không phải nguyên nhân.
+   * Khi có rơ, góc float (I2) chỉ giúp được nếu bước lệnh thực sự nhỏ hơn phần dư. Với PCA9685 ở 50 Hz thì điều này không đúng, nên τ_R = 0,2° là không thực tế.
+   * Ngoại lệ C-C 58% (PWM, không rơ): ghi nhận, chưa phân tích. Có khả năng do lệnh thăm dò J bị lượng tử hóa.
+   * I2 vẫn có ích vì tiếp cận một chiều triệt được rơ. Nhưng lý lẽ cho I2 phải dựa vào rơ đo ở E0.4, không dựa vào lượng tử hóa.
 6. **Bài toán nhìn chính diện bị điều kiện kém.**
    * Diamond 40 mm và bảng tham chiếu ở 65 cm cho sai số tâm camera cỡ mm tới cm khi độ phân giải thấp. Trên ảnh tổng hợp 960 px có siêu lấy mẫu: Diamond 7–12 mm, bảng 0,3–2 mm.
    * Ở 4K thì tốt hơn khoảng 4 lần, nhưng vẫn cần E0.5 định lượng chất lượng GT trước khi kết luận về các sai số dưới mm.

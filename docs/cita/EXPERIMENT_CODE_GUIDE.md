@@ -54,15 +54,47 @@ python tools/capture_session.py --exp E0.2 --dry-run burst --n 5      # thử, k
 ```
 
 * Khi không có `--dry-run`, phải thêm `--i-know-hardware-moves` thì tool mới cho chạy rig thật.
-* Ảnh được chụp với camera **thủ công**: `LensPosition=1.5`, AE/AWB tắt, phơi sáng cố định (`--exposure-us`, `--gain`, `--awb r,b`), không chạy dò lấy nét tự động.
+* **Kiểm tra trước khi chạy (v1.2).** Trước khi động phần cứng, tool in ra:
+  * vùng di chuyển X/Z/pan/tilt so với vị trí lúc khởi động, gồm overshoot bù rơ và baseline stereo;
+  * thời gian ước tính, tính từ `pulse_delay` thực tế (2·pulse_delay mỗi bước, 800 bước/mm);
+  * dung lượng ảnh ước tính (25 MB/khung PNG 4K, 5 MB/khung JPG).
+
+  Sau đó:
+  * Phải gõ `yes`, hoặc truyền `--confirm-envelope`. Không xác nhận thì thoát với mã 3.
+  * Nếu dung lượng trống < 1,2 × ước tính thì dừng (mã 5). Sau khung đầu tiên, tool đo lại bằng kích thước khung thật. Kết quả ghi vào `manifest.plan`, `disk_check` và `disk_check_first_frame`.
+* **AWB đo một lần.** Ảnh được chụp với camera **thủ công**: `LensPosition=1.5`, AE/AWB tắt, phơi sáng cố định (`--exposure-us`, `--gain`), không chạy dò lấy nét tự động. ColourGains lấy từ phép đo dưới đèn thật:
+
+  ```bash
+  python tools/capture_session.py --exp E1 --lighting L1 awb            # AWB tự động 3 s -> <out>/awb_gains.json
+  python tools/capture_session.py --exp E1 --lighting L1 --awb-from device_agent/data/sessions/awb_gains.json --i-know-hardware-moves grid ...
+  ```
+
+  * `--awb r,b` vẫn dùng được.
+  * Giá trị mặc định (1.2, 1.5) chỉ áp dụng ở `--dry-run`. Chạy thật mà thiếu cả `--awb` lẫn `--awb-from` thì báo lỗi (mã 4).
+* `--pulse-delay-us` mặc định 500, tức hành vi cũ, và được ghi vào manifest. Thử tốc độ cao hơn ở E0.4.
 * Giới hạn an toàn: `--max-travel-mm 120`, `--max-servo-offset-deg 15`, cộng với giới hạn sẵn có của `HardwareController`.
 * Tham số I2 (không bật = hành vi cũ): `--float-angles --settle-s 1.0 --unidirectional --backlash-deg 2 --backlash-steps 0 [--servo-release]`.
+  * `--servo-release` (`servo_release_after_move`) **chỉ nhả PWM servo pan**.
+  * Servo tilt **không bao giờ** bị nhả, vì nó đang chịu tải camera. Quy tắc này áp dụng cả trong `main_app.py`.
 * Giá trị âm trong danh sách được hỗ trợ: `--x -40,-20,0,20,40`.
 * Chép phiên sang server (không ghi đè):
 
 ```bash
 rsync -av --ignore-existing embed/device_agent/data/sessions/ user@server:<repo>/server/data/sessions/
 ```
+
+### 0.6 Trước mỗi phiên trên rig
+
+1. **Vị trí xe trượt.**
+   * Phía **+X** còn trống ≥ **140 mm**: baseline stereo 100 mm + lưới 40 mm.
+   * Phía **−X** còn trống ≥ **40 mm**.
+   * Đối chiếu với dòng `[PLAN] X ... mm` mà tool in ra trước khi chạy. Dòng này đã gồm cả overshoot bù rơ.
+2. **Luôn dùng `--return-home`** với `grid`, để phiên sau bắt đầu đúng vị trí.
+3. **Kiểm tra thẻ nhớ.**
+   * Một phiên E1 PNG 4K khoảng 25 MB × số khung.
+   * Tool tự dừng nếu không đủ 1,2 × ước tính, nhưng nên dọn hoặc chép phiên cũ sang server trước.
+4. **Chạy `awb` mỗi khi đổi đèn** (L0/L1/...) và dùng `--awb-from`. Các lệnh chụp thật trong tài liệu này viết `--awb-from $AWB`, với `AWB=device_agent/data/sessions/awb_gains.json` (hoặc file `--awb-out` tương ứng với đèn). File `awb_gains.json` ghi Lux và ColourTemperature, để đối chiếu điều kiện ánh sáng giữa các phiên.
+5. Thử trước bằng `--dry-run` với đúng tham số, xem vùng di chuyển rồi mới chạy thật.
 
 ---
 
@@ -78,7 +110,7 @@ rsync -av --ignore-existing embed/device_agent/data/sessions/ user@server:<repo>
 ```bash
 # Pi: mỗi khoảng cách một phiên tĩnh 60 khung
 python tools/capture_session.py --exp E0.2 --painting-id P001 --distance-cm 65 --lighting L0 \
-    --settle-s 2 --i-know-hardware-moves burst --n 60 --first-is-golden
+    --settle-s 2 --awb-from $AWB --i-know-hardware-moves burst --n 60 --first-is-golden
 ```
 
 ### E0.3 – Mô hình nhiễu σ_d, σ_o (VCE)
@@ -88,7 +120,7 @@ Chụp trên **tranh hiệu chuẩn riêng `P000`**. Tranh này **không** dùng
 ```bash
 # Pi
 python tools/capture_session.py --exp E0.3 --painting-id P000 --distance-cm 65 --settle-s <t_s> \
-    --i-know-hardware-moves grid --x -20,0,20 --z 0 --pan -2,0,2 --frames 3 --golden-frames 3 --with-stereo --return-home
+    --awb-from $AWB --i-know-hardware-moves grid --x -20,0,20 --z 0 --pan -2,0,2 --frames 3 --golden-frames 3 --with-stereo --return-home
 ```
 
 ```bash
@@ -153,22 +185,22 @@ Trên dữ liệu tổng hợp với slider lệch 5° so với trục x camera:
 
 ```bash
 # Pi: settle (đo t_s) cho từng trục
-python tools/capture_session.py --exp E0.4 --i-know-hardware-moves settle --axis pan --delta 2 --n-frames 30 --trials 20 --alternate
-python tools/capture_session.py --exp E0.4 --i-know-hardware-moves settle --axis x --delta 10 --n-frames 30 --trials 20 --alternate
+python tools/capture_session.py --exp E0.4 --awb-from $AWB --i-know-hardware-moves settle --axis pan --delta 2 --n-frames 30 --trials 20 --alternate
+python tools/capture_session.py --exp E0.4 --awb-from $AWB --i-know-hardware-moves settle --axis x --delta 10 --n-frames 30 --trials 20 --alternate
 ```
 
 ```bash
 # Pi: lặp lại / rơ. Chạy TRƯỚC (không cờ) và SAU I2 (--float-angles --unidirectional --backlash-deg 2 --settle-s <t_s>)
-python tools/capture_session.py --exp E0.4 --session-id E04_rep_pan_before --i-know-hardware-moves --settle-s 1.5 \
+python tools/capture_session.py --exp E0.4 --session-id E04_rep_pan_before --awb-from $AWB --i-know-hardware-moves --settle-s 1.5 \
     repeat --axis pan --levels 1,3 --reps 10 --both-sides
-python tools/capture_session.py --exp E0.4 --session-id E04_rep_pan_after --i-know-hardware-moves --settle-s 1.5 \
+python tools/capture_session.py --exp E0.4 --session-id E04_rep_pan_after --awb-from $AWB --i-know-hardware-moves --settle-s 1.5 \
     --float-angles --unidirectional --backlash-deg 2 repeat --axis pan --levels 1,3 --reps 10 --both-sides
 ```
 
 ```bash
 # Pi: độ phân giải servo (đáp ứng theo lệnh nhỏ)
-python tools/capture_session.py --exp E0.4 --session-id E04_res_pan --i-know-hardware-moves --settle-s 1.5 --float-angles \
-    grid --x 0 --z 0 --pan -1,-0.5,-0.25,0,0.25,0.5,1 --frames 3 --golden-frames 5
+python tools/capture_session.py --exp E0.4 --session-id E04_res_pan --awb-from $AWB --i-know-hardware-moves --settle-s 1.5 --float-angles \
+    grid --x 0 --z 0 --pan -1,-0.5,-0.25,0,0.25,0.5,1 --frames 3 --golden-frames 5 --return-home
 ```
 
 ```bash
@@ -190,7 +222,7 @@ python tools/experiments/e0_repeat.py --session data/sessions/E0.4/E04_res_pan -
 
 ```bash
 python tools/capture_session.py --exp E1 --painting-id P003 --lighting L0 --distance-cm 65 --seed 2027 \
-    --settle-s <t_s> --float-angles --unidirectional --backlash-deg 2 --i-know-hardware-moves \
+    --settle-s <t_s> --float-angles --unidirectional --backlash-deg 2 --awb-from $AWB --i-know-hardware-moves \
     grid --x -40,-20,-10,-5,0,5,10,20,40 --z -20,0,20 --pan -4,0,4 --frames 3 --golden-frames 3 --with-stereo --return-home
 ```
 
