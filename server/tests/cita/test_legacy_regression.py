@@ -123,11 +123,31 @@ def test_p0_inspection_matches_baseline(tmp_path, profile_name, name):
     for key in ("analysis_status", "analysis_error", "alignment_quality", "sift_inliers", "damage_pct",
                 "auto_description"):
         assert res[key] == exp[key], key
-    for key in ("ssim", "ssim_gray", "ssim_color", "valid_mask_ratio"):
-        assert res[key] == pytest.approx(exp[key], abs=1e-9), key
+    # Floating-point SSIM differs across platforms (Windows capture vs Linux:
+    # ~4e-6, reproducible, not noise); integer / categorical keys and the
+    # detection list stay exact. expected_baseline is never re-recorded.
+    for key in ("ssim", "ssim_gray", "ssim_color"):
+        assert res[key] == pytest.approx(exp[key], abs=1e-5), key
+    # valid_mask_ratio = warped+eroded mask pixel count / image size. Measured on
+    # Linux (OpenCV 4.14.0, numpy 2.4.6): 1.3e-5 (unchanged pair) and 4e-4 (damaged
+    # pair, ~210 border pixels of 518 400, i.e. the border moves < 0.1 px) because
+    # H differs in its last bits. 1e-3 ~ a 0.15 px shift of the warp border.
+    assert res["valid_mask_ratio"] == pytest.approx(exp["valid_mask_ratio"], abs=1e-3)
     det = json.loads(res["detections_json"])
-    assert det["all_detections"] == exp["detections_json"]["all_detections"]
-    assert res["all_detections"] == exp["all_detections"]
+
+    def same_detections(got, want):
+        # Class, confidence, box and crop phase must be identical. region_ssim is
+        # the SSIM of a small (~50x50 px) crop of the aligned image, rounded to 4
+        # decimals; measured Linux-vs-Windows max difference over the 20 damaged-pair
+        # detections: 1.7e-3 (all other fields equal) -> abs 5e-3.
+        assert len(got) == len(want)
+        for g, w in zip(got, want):
+            assert {k: v for k, v in g.items() if k != "region_ssim"} == \
+                   {k: v for k, v in w.items() if k != "region_ssim"}
+            assert g.get("region_ssim") == pytest.approx(w.get("region_ssim"), abs=5e-3)
+
+    same_detections(det["all_detections"], exp["detections_json"]["all_detections"])
+    same_detections(res["all_detections"], exp["all_detections"])
     assert Path(res["heatmap_path"]).name == exp["heatmap_path"]
     assert set(exp) <= set(res)
 

@@ -16,7 +16,10 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements-dev.txt
+      # Exact versions the CITA results were produced with (Linux and Windows verified).
+      - run: pip install -r requirements-lock.txt
+      - name: Library versions (compare when numbers drift across platforms)
+        run: python -c "import platform, cv2, numpy, scipy, skimage; print('python', platform.python_version(), platform.platform()); print('opencv', cv2.__version__, 'numpy', numpy.__version__, 'scipy', scipy.__version__, 'skimage', skimage.__version__)"
       - run: python -m compileall -q app ../embed ../ai_module
       - run: pytest -q --ignore=tests/cita
       - name: CITA experiment tests
