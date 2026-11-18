@@ -44,11 +44,11 @@ def test_replay_eval_tables(tmp_path):
     assert set(ev["methods"]) == {"M1", "M2-full", "M3", "M4", "M5"}
     for m in ev["methods"]:
         s = ev["summary"][m]
-        assert s["n_with_gt"] > 0 and s["failure_rate"] == 0.0
-        assert s["e_t_mm"]["median"] < 15.0
-    assert ev["summary"]["M2-full"]["e_t_mm"]["median"] < 4.0
+        assert s["n_with_gt"] == 3 and s["failure_rate"] == 0.0          # 3 positions = 3 units
+        assert s["e_t_first"]["median"] < 15.0 and s["fallback_rate"] is not None
+    assert ev["summary"]["M2-full"]["e_t_first"]["median"] < 4.0
     assert ev["summary"]["M4"]["coverage_2sigma"] is not None
-    assert "friedman" in ev["paired_tests"]["e_t_mm"]
+    assert ev["paired_tests"]["n_common_units"] == 3 and "M5" in ev["paired_tests"]["methods"]
     assert (tmp_path / "eval_units.csv").exists()
     assert make_tables.main(["--eval", str(out.with_suffix(".json")), "--out", str(tmp_path / "t"),
                              "--log-root", str(logs)]) == 0

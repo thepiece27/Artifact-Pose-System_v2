@@ -112,3 +112,39 @@ def coverage(errors: np.ndarray, sigmas: np.ndarray, k: float = 2.0) -> float | 
     if not ok.any():
         return None
     return float(np.mean(np.abs(e[ok]) <= k * s[ok]))
+
+
+def cluster_bootstrap_ci(clusters: dict, stat: Callable[[np.ndarray], float] = np.median, *, n_boot: int = 2000,
+                         alpha: float = 0.05, seed: int = 2027) -> tuple | None:
+    """Two-stage cluster bootstrap (R5): resample clusters (sessions) with
+    replacement, then resample the units inside every selected cluster with
+    replacement, pool and compute ``stat``. Units of one session share the
+    golden model and are correlated, so this CI is the honest one."""
+    groups = [np.asarray([x for x in v if x is not None and np.isfinite(x)], dtype=np.float64)
+              for v in clusters.values()]
+    groups = [g for g in groups if len(g)]
+    if not groups or sum(len(g) for g in groups) < 2:
+        return None
+    rng = np.random.default_rng(seed)
+    boots = np.empty(n_boot)
+    for b in range(n_boot):
+        picks = rng.integers(0, len(groups), size=len(groups))
+        pooled = np.concatenate([groups[i][rng.integers(0, len(groups[i]), size=len(groups[i]))] for i in picks])
+        boots[b] = stat(pooled)
+    return float(np.quantile(boots, alpha / 2)), float(np.quantile(boots, 1 - alpha / 2))
+
+
+def wilcoxon_contrasts(table: dict[str, Sequence[float]], contrasts: list[tuple[str, str]]) -> list[dict]:
+    """Paired Wilcoxon for pre-registered contrasts (a - b), Holm over the set."""
+    raw = {}
+    for a, b in contrasts:
+        if a not in table or b not in table:
+            continue
+        x, y = np.asarray(table[a], float), np.asarray(table[b], float)
+        if len(x) < 3:
+            continue
+        p = 1.0 if np.allclose(x, y) else float(stats.wilcoxon(x, y, zero_method="wilcox").pvalue)
+        raw[f"{a}|{b}"] = (p, float(np.median(x - y)), len(x))
+    adj = holm({k: v[0] for k, v in raw.items()})
+    return [{"contrast": f"{k.split('|')[0]}-{k.split('|')[1]}", "a": k.split("|")[0], "b": k.split("|")[1],
+             "n_units": v[2], "median_diff": v[1], "p": v[0], "p_holm": adj[k]} for k, v in raw.items()]

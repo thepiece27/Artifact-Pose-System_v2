@@ -113,7 +113,8 @@ def main(argv=None) -> int:
             else:
                 status = "no_gt"
             log.log(arm="GT", input={**input_record(session, [f]), "pose_index": f.pose_index,
-                                     "target": f.get("target"), "odometry": f.get("odometry")},
+                                     "reps": [f.get("rep")], "target": f.get("target"),
+                                     "odometry": f.get("odometry")},
                     output=out, status=status)
 
     # ---- methods --------------------------------------------------------------
@@ -158,7 +159,8 @@ def main(argv=None) -> int:
                     continue
                 imgs = [f.load() for f in batch]
                 masks = [boards[f.frame_id]["mask"] for f in batch]
-                inp = {**input_record(session, batch), "pose_index": key, "target": batch[0].get("target")}
+                inp = {**input_record(session, batch), "pose_index": key, "target": batch[0].get("target"),
+                       "reps": [f.get("rep") for f in batch]}
                 with log.trial(arm=arm, input=inp, profile_name=prof.name, profile_hash_arm=prof.profile_hash) as out:
                     est = estimate_pose(imgs, golden, cfg, masks=masks)
                     out.update(est.to_json())
