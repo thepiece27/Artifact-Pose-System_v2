@@ -361,9 +361,27 @@ def make_controller(profile, settings=None, *, device_id: str = "dev", artifact_
             sign_z=signs.z if signs else getattr(settings, "sign_move_z", -1),
             sign_pan=signs.pan if signs else getattr(settings, "sign_rotate_pan", -1),
             sign_tilt=signs.tilt if signs else getattr(settings, "sign_rotate_tilt", -1))
-    root = Path(server_root) if server_root else Path(__file__).resolve().parents[3]
-    store = root / c.jacobian_dir / f"jacobian_{_safe(device_id)}_{_safe(artifact_id)}.json"
+    store = jacobian_store_dir(c.jacobian_dir, settings, server_root) / \
+        f"jacobian_{_safe(device_id)}_{_safe(artifact_id)}.json"
     return JacobianController(c, store_path=store, clock=clock)
+
+
+def jacobian_store_dir(jacobian_dir: str, settings=None, server_root: str | Path | None = None) -> Path:
+    """Where measured Jacobians are stored.
+
+    * absolute ``control.jacobian_dir``: used as is;
+    * relative ``data/<x>`` with server Settings: ``DATA_DIR/<x>`` (runtime data,
+      Docker volume), so the server never writes into the source tree;
+    * otherwise relative to ``server_root`` (default: the ``server`` directory).
+    """
+    p = Path(jacobian_dir)
+    if p.is_absolute():
+        return p
+    data_dir = getattr(settings, "data_dir", None)
+    if data_dir is not None and p.parts and p.parts[0] == "data":
+        return Path(data_dir).joinpath(*p.parts[1:])
+    root = Path(server_root) if server_root else Path(__file__).resolve().parents[3]
+    return root / p
 
 
 def _safe(text: str) -> str:

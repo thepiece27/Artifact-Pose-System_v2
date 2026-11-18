@@ -24,7 +24,7 @@
 | 4 | `change_detection/` (legacy P0 chuyển nguyên văn, roi, registration+ECC, photometric, ssim_map, regions, ai_input, pipelines). Công cụ E3 (`define_roi`, `calibrate_thresholds`, `replay_change`, `eval_change`). `eval_reloc` | `1c7f99c`, `322a72c`, **cita-freezeC** |
 | 5–6 | `requirements-lock.txt`. `CITA_PROFILE` trong compose/env example. `smoke_server.py`. `grid --with-stereo`. Cảnh báo cỡ mẫu khi chọn ngưỡng. Tài liệu | `a5c1302` và các commit sau |
 
-Thống kê: 118 file đổi so với `cita-baseline` (+13 553 / −543 dòng). Trong đó 41 file nằm trong `server/app` và `embed` (+5 933 / −541). Phần còn lại là test, fixture, công cụ, profile và tài liệu.
+Thống kê (tại tag `cita-exp-v1.1`): xem `git diff --stat cita-baseline cita-exp-v1.1`. Khoảng 120 file, trong đó khoảng 41 file nằm trong `server/app` và `embed`. Phần còn lại là test, fixture, công cụ, profile và tài liệu.
 
 File code cũ bị sửa (mọi thay đổi đều giữ mặc định cũ):
 * `common.py`: thêm `mask=None` cho `extract_orb`.
@@ -65,7 +65,9 @@ File code cũ bị sửa (mọi thay đổi đều giữ mặc định cũ):
 |---|---|---|
 | §5.1 | `docs/cita/plan/CITA2027_Ke_hoach_Phan{1,2}.md` **không có trong repo**, nên không đọc được | Nhóm chưa chép vào. Mẫu Bảng E1 trong `make_tables.py` được thiết kế theo §7.5, cần đối chiếu lại với kế hoạch |
 | §5.3.1 | Không build được module native g2o (máy không có cmake hay trình biên dịch C++). Toàn bộ dùng backend scipy, test parity bị bỏ qua | §7.4 cho phép dùng scipy làm chuẩn |
-| §6.2 | Ngoài các trường của B.2, bản ghi có thêm `record_type`, `profile_name`, `profile_hash_arm` (profile riêng của từng nhánh) | Trường hợp một run chạy nhiều nhánh |
+| §6.2 | Ngoài các trường của B.2, bản ghi có thêm `record_type`, `profile_name`, `profile_hash_arm` (profile riêng của từng nhánh). Công cụ đánh giá ghi `record_type: "tool"` với `profile` = null | Trường hợp một run chạy nhiều nhánh; công cụ đánh giá không chạy theo profile phương pháp |
+| §7.1 | `run_correction_step` được giữ **nguyên văn** (chính là nhánh `legacy`); việc chọn phương pháp theo profile đặt ở `PoseService.correct_image`, không đặt bên trong `run_correction_step` | Giữ chữ ký, đầu ra và CLI `correction.py` cũ mà không phải truyền profile vào hàm cũ. `estimate_pose(method="legacy")` tái hiện nó chính xác (test hồi quy) |
+| §7.2 (M2) | Golden M2 dùng `match_descriptors` (mutual + ratio 0,6) và `geometry.triangulate` với T = baseline ra lệnh, thay cho `match_stereo`/`triangulate_stereo` native | Module native không build được ở đây. Cách làm tương đương về hình học, có kiểm tra cheirality và các cổng chất lượng sẵn có |
 | §6.6 | Thêm `grid --with-stereo` và `--split` | E1 cần golden + stereo trong cùng một phiên |
 | §8.1 | Vòng căn chỉnh trên server vẫn theo kiểu sự kiện (mỗi lần upload là một bước). `AlignmentSession` dùng chung cho server, vòng đồng bộ và rig ảo, thay cho một vòng `move()/capture()` chặn | Kiến trúc hiện có (thiết bị tự chụp rồi upload sau mỗi move) |
 | §8.5 rig thật | Điều phối qua REST (reset → move có nhiễu → `start-alignment` có `cita_arm`) | Không cần truy cập MQTT trực tiếp từ công cụ |
@@ -142,5 +144,5 @@ Khuyến nghị (nhóm tự làm, có người duyệt):
 4. Chụp E1 bằng `grid --with-stereo`, replay và eval (kèm ablation `golden.stereo_source=commanded`).
 5. Trước E2: thử `run_reloc_trials --virtual` với tham số rig đo được, rồi mới lên rig thật (biên độ nhỏ trước).
 6. E3: chụp các tập val/test riêng, gán nhãn GT theo B.4, chọn ngưỡng **chỉ** trên val.
-7. Sau `cita-freezeC` chỉ sửa lỗi, tăng tag `cita-exp-v1.N` và ghi vào `CHANGELOG_CITA.md`.
+7. Sau `cita-freezeC` chỉ sửa lỗi, tăng tag `cita-exp-v1.N` và ghi vào `CHANGELOG_CITA.md`. Bản bàn giao là `cita-exp-v1.1`.
 8. Xử lý secrets theo §8.

@@ -152,3 +152,15 @@ def test_session_state_roundtrip(tmp_path):
     again = AlignmentSession.from_state(data, build_session(prof, server_root=tmp_path).controller)
     assert again.controller.probe_step == sess.controller.probe_step == 1
     assert again.n_probe_moves == 1 and again.iteration == 0
+
+
+def test_jacobian_store_location(tmp_path):
+    from types import SimpleNamespace
+    from app.modules.artifact_pose.control import jacobian_store_dir
+    settings = SimpleNamespace(data_dir=tmp_path / "data_dir")
+    # Server: relative data/<x> goes to DATA_DIR/<x> (never into the source tree).
+    assert jacobian_store_dir("data/control", settings) == tmp_path / "data_dir" / "control"
+    assert jacobian_store_dir(str(tmp_path / "abs"), settings) == tmp_path / "abs"
+    assert jacobian_store_dir("data/control", None, tmp_path) == tmp_path / "data" / "control"
+    ctl = make_controller(load_profile("C-C"), settings, device_id="d", artifact_id="a")
+    assert ctl.store_path == tmp_path / "data_dir" / "control" / "jacobian_d_a.json"

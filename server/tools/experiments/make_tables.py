@@ -15,6 +15,9 @@ import json
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import add_log_args, log_tool_run  # noqa: E402
+
 
 def fmt(v, nd=2):
     if v is None:
@@ -98,6 +101,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--eval", nargs="+", required=True)
     parser.add_argument("--out", required=True, help="output prefix: writes <out>.md and <out>.tex")
+    add_log_args(parser)
     args = parser.parse_args(argv)
     md, tex = [], []
     for path in args.eval:
@@ -113,6 +117,10 @@ def main(argv=None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.with_suffix(".md").write_text("\n".join(md), encoding="utf-8")
     out.with_suffix(".tex").write_text("\n".join(tex), encoding="utf-8")
+    exps = sorted({json.loads(Path(p).read_text(encoding="utf-8")).get("experiment") for p in args.eval})
+    log_tool_run("+".join(exps) if len(exps) > 1 else exps[0], "make_tables", inputs=args.eval,
+                 log_root=args.log_root, run_id=args.run_id,
+                 outputs={"markdown": str(out.with_suffix(".md")), "latex": str(out.with_suffix(".tex"))})
     print(f"wrote {out.with_suffix('.md')} and {out.with_suffix('.tex')}")
     return 0
 

@@ -35,6 +35,7 @@ def main(argv=None) -> int:
     g.add_argument("--diamond-rect", help="x0,y0,x1,y1 in Diamond-plane mm (Y up)")
     p.add_argument("--size-mm", default=None, help="physical painting size w,h in mm (enables px_per_mm)")
     p.add_argument("--calib", default=None)
+    _common.add_log_args(p)
     args = p.parse_args(argv)
     img = cv2.imread(args.image)
     if img is None:
@@ -59,6 +60,8 @@ def main(argv=None) -> int:
     preview = img.copy()
     cv2.polylines(preview, [np.rint(poly).astype(np.int32)], True, (0, 255, 255), 3)
     cv2.imwrite(str(out.with_suffix(".png")), preview)
+    _common.log_tool_run("E3", "define_roi", inputs=[args.image], log_root=args.log_root, run_id=args.run_id,
+                         outputs={"roi": str(out), "source": source, "polygon_ref_px": poly, "size_mm": size})
     print(f"ROI ({source}) -> {out}")
     return 0
 

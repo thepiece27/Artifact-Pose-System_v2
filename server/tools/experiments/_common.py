@@ -63,6 +63,34 @@ def setup(args):
     return profile, seed, rng
 
 
+def add_log_args(parser: argparse.ArgumentParser) -> None:
+    """--log-root / --run-id for tools that do not take a method profile."""
+    parser.add_argument("--log-root", default=None, help="default: logs/experiments")
+    parser.add_argument("--run-id", default=None)
+
+
+def log_tool_run(exp: str, arm: str, *, inputs: list, outputs: dict, log_root: str | None = None,
+                 run_id: str | None = None, seed: int | None = None, status: str = "ok") -> Path:
+    """One cita.trial.v1 record for evaluation / table / ROI tools (no method profile:
+    ``profile`` and ``profile_hash`` are null; the evaluated runs carry their own)."""
+    files = [Path(p) for p in inputs]
+    log = TrialLogger(exp, root=log_root or "logs/experiments", run_id=run_id, profile=None, seed=seed,
+                      base_dir=SERVER)
+    log.log(arm=arm, input={"files": [str(p) for p in files],
+                            "sha256": [sha256_file(p) if p.is_file() else None for p in files],
+                            "argv": sys.argv[1:]},
+            output=json_safe(outputs), status=status, record_type="tool")
+    return log.path
+
+
+def expand(patterns: list[str]) -> list[str]:
+    import glob
+    out = []
+    for pattern in patterns:
+        out.extend(sorted(glob.glob(pattern)) or [pattern])
+    return out
+
+
 def write_json(path: Path, data) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -23,7 +23,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import load_calibration, write_json  # noqa: E402
+from _common import add_log_args, expand, load_calibration, log_tool_run, write_json  # noqa: E402
 
 from app.experiments.stats import bootstrap_ci, describe, friedman_wilcoxon, mcnemar  # noqa: E402
 from app.experiments.trial_log import read_jsonl  # noqa: E402
@@ -112,6 +112,7 @@ def main(argv=None) -> int:
     p.add_argument("--profile", default="pbl_legacy", help="ground_truth.board settings")
     p.add_argument("--seed", type=int, default=2027)
     p.add_argument("--n-boot", type=int, default=2000)
+    add_log_args(p)
     args = p.parse_args(argv)
     rows = []
     for pattern in args.logs:
@@ -134,6 +135,10 @@ def main(argv=None) -> int:
     write_json(out.with_suffix(".json"), {"experiment": "E2", "logs": args.logs, "seed": args.seed,
                                           **{k: v for k, v in res.items() if k != "trials"}})
     write_json(out.with_name(out.name + "_trials.json"), res["trials"])
+    log_tool_run("E2", "eval_reloc", inputs=expand(args.logs) + ([args.golden_image] if args.golden_image else []),
+                 log_root=args.log_root, run_id=args.run_id, seed=args.seed,
+                 outputs={"result": str(out.with_suffix(".json")),
+                          "success_gt_rate": {a: res["summary"][a]["success_gt_rate"] for a in res["arms"]}})
     for a in res["arms"]:
         s = res["summary"][a]
         print(f"{a}: success GT {s['success_gt_rate']:.2f} est {s['success_est_rate']:.2f} "

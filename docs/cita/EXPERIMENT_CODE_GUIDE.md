@@ -37,6 +37,7 @@ pytest -q                                                       # phải xanh tr
 
 * `logs/experiments/<exp>/<run_id>.jsonl`, schema `cita.trial.v1`: commit, cờ dirty, profile/hash, seed, phiên bản thư viện, input (session, frame, sha256), output, thời gian.
 * File log không bao giờ bị ghi đè: chạy lại thì dùng `--run-id` khác.
+* Các công cụ đánh giá/bảng/ROI (`eval_*`, `make_tables`, `define_roi`) cũng ghi một bản ghi `record_type: "tool"`, gồm file đầu vào, sha256, argv và đường dẫn kết quả.
 * `logs/`, `results/` và `data/control/` đã nằm trong `.gitignore`.
 
 ### 0.4 Bảng tham chiếu ChArUco (GT độc lập)
@@ -207,7 +208,7 @@ python tools/experiments/make_tables.py --eval results/E2/eval.json --out result
 
 * Mỗi lượt gồm: `reset` → nhiễu (`move` với `float_angles`) → `start-alignment` (`cita_arm`, `cita_trial_id`, `keep_pose=true`) → chờ `alignment_status` về `complete` hoặc `failed`.
 * Server ghi từng vòng điều khiển vào `logs/experiments/E2/server_<ngày>.jsonl`. Trong Docker, mount `/app/logs` nếu cần giữ log.
-* J (Jacobian) được lưu ở `data/control/jacobian_<device>_<artifact>.json`, hết hạn sau `probe.ttl_s`.
+* J (Jacobian) được lưu ở `<DATA_DIR>/control/jacobian_<device>_<artifact>.json` (trong Docker: volume dữ liệu), hết hạn sau `probe.ttl_s`. Muốn đo lại J thì xóa file này.
 * Thành công theo GT = khoảng cách giữa bảng ở ảnh cuối và bảng ở ảnh golden không vượt τ. Thành công theo bộ ước lượng được báo riêng.
 
 ---

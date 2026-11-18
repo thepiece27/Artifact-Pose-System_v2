@@ -97,3 +97,25 @@ def test_run_reloc_trials_virtual_all_arms(tmp_path):
     # Jacobian probed once per (painting, arm) then reused.
     probe = [r["output"]["n_probe_moves"] for r in summaries if r["arm"] == "C-C"]
     assert sum(1 for p in probe if p > 0) == 2
+
+
+def test_render_mode_matches_direct_rendering():
+    """VirtualRig.render (plane homography A.5 applied to the golden image)
+    must agree with rendering the scene at the rig's true pose."""
+    import synth
+    scene = synth.make_scene(4)
+    golden = scene.render(scene.T_gw(), supersample=2)
+    rig = VirtualRig(RigParams(slider_misalign_deg=5.0, pivot_offset_mm=(0, 10, -30), noise_c_mm=0,
+                               noise_rot_deg=0), T_gw=scene.T_gw())
+    rig.perturb(x_mm=12, z_mm=-8, pan_deg=1.5, tilt_deg=-1.0)
+    warped = rig.render(golden, scene.K)
+    direct = scene.render(rig.true_dT() @ scene.T_gw(), supersample=2)
+    h, w = golden.shape[:2]
+    a = warped[h // 4:3 * h // 4, w // 4:3 * w // 4].astype(float).ravel()
+    b = direct[h // 4:3 * h // 4, w // 4:3 * w // 4].astype(float).ravel()
+    assert np.corrcoef(a, b)[0, 1] > 0.9
+    # A wrong sign convention (inverse motion) must not match.
+    rig2 = VirtualRig(RigParams.ideal(), T_gw=scene.T_gw())
+    rig2.perturb(x_mm=-12, z_mm=8, pan_deg=-1.5, tilt_deg=1.0)
+    c = rig2.render(golden, scene.K)[h // 4:3 * h // 4, w // 4:3 * w // 4].astype(float).ravel()
+    assert np.corrcoef(c, b)[0, 1] < np.corrcoef(a, b)[0, 1] - 0.2

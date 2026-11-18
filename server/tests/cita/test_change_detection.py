@@ -72,7 +72,7 @@ def test_roi_tools(tmp_path):
     poly_true = scene.painting_polygon_image(scene.T_gw())
     poly_txt = ";".join(f"{x:.1f},{y:.1f}" for x, y in poly_true)
     assert define_roi.main(["--image", str(path), "--polygon", poly_txt, "--size-mm", "297,210",
-                            "--out", str(tmp_path / "roi.json")]) == 0
+                            "--out", str(tmp_path / "roi.json"), "--log-root", str(tmp_path / "logs")]) == 0
     roi = roi_mod.load_roi(tmp_path / "roi.json")
     assert roi_mod.px_per_mm(roi) == pytest.approx(scene.px_per_mm_golden(), rel=0.02)
     assert (tmp_path / "roi.png").exists()
@@ -98,7 +98,7 @@ def test_e3_chain_acceptance(pair_sets, tmp_path):
     pkg = json.loads(Path(p3["output"]["ai_input_package_path"]).read_text())
     assert pkg["schema"] == "cita.ai_input.v1" and pkg["regions"] and pkg["threshold"]["mode"] == "fixed"
     assert eval_change.main(["--logs", str(tmp_path / "logs" / "E3" / "e3.jsonl"), "--pairs", str(test),
-                             "--out", str(tmp_path / "ev"), "--n-boot", "200"]) == 0
+                             "--out", str(tmp_path / "ev"), "--n-boot", "200", "--log-root", str(tmp_path / "logs")]) == 0
     ev = json.loads((tmp_path / "ev.json").read_text())["summary"]
     # Acceptance: fewer false alarms than P0 on unchanged pairs; recall >= 0.9 for damage >= 5 mm.
     assert ev["P2"]["false_alarm_rate_unchanged"] < ev["P0"]["false_alarm_rate_unchanged"]
@@ -108,7 +108,9 @@ def test_e3_chain_acceptance(pair_sets, tmp_path):
         assert all(v is None or v >= 0.9 for k, v in by.items() if k in ("medium", "large"))
         assert ev[code]["recall"] >= 0.9 and ev[code]["roc_auc"] >= 0.9
     assert ev["P3"]["class_macro_f1"] is not None
-    assert make_tables.main(["--eval", str(tmp_path / "ev.json"), "--out", str(tmp_path / "tab")]) == 0
+    assert ev["P2"]["sensitivity_vs_offset"] and ev["P2"]["sensitivity_vs_offset_deg"]
+    assert make_tables.main(["--eval", str(tmp_path / "ev.json"), "--out", str(tmp_path / "tab"),
+                             "--log-root", str(tmp_path / "logs")]) == 0
     assert "| P3 |" in (tmp_path / "tab.md").read_text(encoding="utf-8")
 
 
@@ -117,10 +119,12 @@ def test_e2_eval_chain(tmp_path):
                                   "C-A,C-B,C-C,C-D", "--log-root", str(tmp_path), "--run-id", "e2",
                                   "--jacobian-dir", str(tmp_path / "jac")]) == 0
     assert eval_reloc.main(["--logs", str(tmp_path / "E2" / "e2.jsonl"), "--out", str(tmp_path / "ev2"),
-                            "--n-boot", "100"]) == 0
+                            "--n-boot", "100", "--log-root", str(tmp_path), "--run-id", "ev2"]) == 0
+    assert read_jsonl(tmp_path / "E2" / "ev2.jsonl")[0]["arm"] == "eval_reloc"
     ev = json.loads((tmp_path / "ev2.json").read_text())
     assert set(ev["arms"]) == {"C-A", "C-B", "C-C", "C-D"} and ev["n_paired_blocks"] == 4
     for a in ev["arms"]:
         assert ev["summary"][a]["n_trials"] == 4 and ev["summary"][a]["success_gt_rate"] is not None
     assert len(ev["paired_tests"]["mcnemar_success_gt"]) == 6
-    assert make_tables.main(["--eval", str(tmp_path / "ev2.json"), "--out", str(tmp_path / "t2")]) == 0
+    assert make_tables.main(["--eval", str(tmp_path / "ev2.json"), "--out", str(tmp_path / "t2"),
+                             "--log-root", str(tmp_path)]) == 0

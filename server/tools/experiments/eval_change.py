@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import write_json  # noqa: E402
+from _common import add_log_args, expand, log_tool_run, write_json  # noqa: E402
 from _pairs import PairSet  # noqa: E402
 
 from app.experiments.stats import bootstrap_ci, roc_auc, tpr_at_fpr  # noqa: E402
@@ -131,16 +131,21 @@ def evaluate(rows: list[dict], gts: dict, *, seed: int = 2027, n_boot: int = 200
         recall = tp / (tp + fn) if tp + fn else None
         f1 = 2 * prec * recall / (prec + recall) if prec and recall else None
         recalls = [p["tp"] / p["n_gt"] for p in per_pair if p["pipeline"] == code and p["n_gt"]]
-        # Sensitivity to misalignment: false alarms / recall per offset bin.
-        curve = []
-        for lo, hi in ((0, 1), (1, 2), (2, 4), (4, 8), (8, float("inf"))):
-            sel = [o for o in offsets if o["offset_mm"] is not None and lo <= o["offset_mm"] < hi]
-            if sel:
-                un = [o for o in sel if not o["changed"]]
-                ch = [o for o in sel if o["changed"]]
-                curve.append({"offset_mm_bin": [lo, hi], "n": len(sel),
-                              "false_alarm_rate": float(np.mean([o["n_regions"] > 0 for o in un])) if un else None,
-                              "recall": float(np.mean([o["tp"] / o["n_gt"] for o in ch])) if ch else None})
+        # Sensitivity to deliberate misalignment: false alarms / recall per offset bin
+        # (translation offset in mm and rotation offset in degrees, from the pair manifest).
+        def sensitivity(key: str, bins) -> list:
+            out = []
+            for lo, hi in bins:
+                sel = [o for o in offsets if o.get(key) is not None and lo <= o[key] < hi]
+                if sel:
+                    un = [o for o in sel if not o["changed"]]
+                    ch = [o for o in sel if o["changed"]]
+                    out.append({f"{key}_bin": [lo, hi], "n": len(sel),
+                                "false_alarm_rate": float(np.mean([o["n_regions"] > 0 for o in un])) if un else None,
+                                "recall": float(np.mean([o["tp"] / o["n_gt"] for o in ch])) if ch else None})
+            return out
+        curve = sensitivity("offset_mm", ((0, 1), (1, 2), (2, 4), (4, 8), (8, float("inf"))))
+        curve_deg = sensitivity("offset_deg", ((0, 0.25), (0.25, 0.5), (0.5, 1), (1, 2), (2, float("inf"))))
         summary[code] = {
             "n_pairs": len(recs), "n_changed": len(pos), "n_unchanged": len(neg),
             "roc_auc": roc_auc(pos, neg), "tpr_at_fpr5": tpr_at_fpr(pos, neg, 0.05),
@@ -152,6 +157,7 @@ def evaluate(rows: list[dict], gts: dict, *, seed: int = 2027, n_boot: int = 200
             "n_by_size": {k: v[1] for k, v in by_size.items()},
             "class_macro_f1": macro_f1(cls_true, cls_pred) if cls_true else None,
             "sensitivity_vs_offset": curve,
+            "sensitivity_vs_offset_deg": curve_deg,
             "roi_afd_px_median": float(np.median([p["roi_afd_px"] for p in per_pair if p["pipeline"] == code
                                                   and p["roi_afd_px"] is not None]))
             if any(p["roi_afd_px"] is not None for p in per_pair if p["pipeline"] == code) else None,
@@ -166,6 +172,7 @@ def main(argv=None) -> int:
     p.add_argument("--out", required=True)
     p.add_argument("--seed", type=int, default=2027)
     p.add_argument("--n-boot", type=int, default=2000)
+    add_log_args(p)
     args = p.parse_args(argv)
     rows = []
     for pattern in args.logs:
@@ -187,6 +194,12 @@ def main(argv=None) -> int:
         w.writerows(res["per_pair"])
     write_json(out.with_suffix(".json"), {"experiment": "E3", "logs": args.logs, "seed": args.seed,
                                           **{k: v for k, v in res.items() if k != "per_pair"}})
+    log_tool_run("E3", "eval_change", inputs=expand(args.logs) + [str(Path(p) / "pairs.json") for p in args.pairs],
+                 log_root=args.log_root, run_id=args.run_id, seed=args.seed,
+                 outputs={"result": str(out.with_suffix(".json")),
+                          "f1": {c: res["summary"][c]["f1"] for c in res["pipelines"]},
+                          "false_alarm_rate_unchanged": {c: res["summary"][c]["false_alarm_rate_unchanged"]
+                                                         for c in res["pipelines"]}})
     for code in res["pipelines"]:
         s = res["summary"][code]
         print(f"{code}: AUC={s['roc_auc']} FA={s['false_alarm_rate_unchanged']} P={s['precision']} "

@@ -36,7 +36,10 @@ def test_replay_eval_tables(tmp_path):
     for r in rows:
         assert r["schema"] == "cita.trial.v1" and r["profile_hash"] and "git_commit" in r and r["seed"] == 2027
     out = tmp_path / "eval"
-    assert eval_pose.main(["--logs", str(logs / "E1" / "r1.jsonl"), "--out", str(out), "--n-boot", "200"]) == 0
+    assert eval_pose.main(["--logs", str(logs / "E1" / "r1.jsonl"), "--out", str(out), "--n-boot", "200",
+                           "--log-root", str(logs), "--run-id", "ev1"]) == 0
+    tool = read_jsonl(logs / "E1" / "ev1.jsonl")[0]
+    assert tool["record_type"] == "tool" and tool["arm"] == "eval_pose" and tool["input"]["sha256"][0]
     ev = json.loads(out.with_suffix(".json").read_text())
     assert set(ev["methods"]) == {"M1", "M2-full", "M3", "M4", "M5"}
     for m in ev["methods"]:
@@ -47,7 +50,8 @@ def test_replay_eval_tables(tmp_path):
     assert ev["summary"]["M4"]["coverage_2sigma"] is not None
     assert "friedman" in ev["paired_tests"]["e_t_mm"]
     assert (tmp_path / "eval_units.csv").exists()
-    assert make_tables.main(["--eval", str(out.with_suffix(".json")), "--out", str(tmp_path / "t")]) == 0
+    assert make_tables.main(["--eval", str(out.with_suffix(".json")), "--out", str(tmp_path / "t"),
+                             "--log-root", str(logs)]) == 0
     md = (tmp_path / "t.md").read_text(encoding="utf-8")
     assert "| M4 |" in md and r"\begin{tabular}" in (tmp_path / "t.tex").read_text(encoding="utf-8")
 
